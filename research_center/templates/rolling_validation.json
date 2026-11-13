@@ -1,0 +1,26 @@
+{
+  "base": {
+    "strategy": "sma_cross",
+    "backend": "reference",
+    "symbol": "000001.SZSE",
+    "initial_cash": 100000,
+    "commission_rate": 0.00025,
+    "min_commission": 5,
+    "slippage_bps": 5,
+    "params": {"fast": 5, "slow": 20, "target_fraction": 0.5, "max_turnover_participation": 0.01}
+  },
+  "folds": [
+    {
+      "train_start": "2024-01-02",
+      "train_end": "2024-01-03",
+      "validation_start": "2024-01-04",
+      "validation_end": "2024-01-04"
+    },
+    {
+      "train_start": "2024-01-03",
+      "train_end": "2024-01-04",
+      "validation_start": "2024-01-05",
+      "validation_end": "2024-01-05"
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>批量与滚动回测 · 本地量化研究中心</title>
+<style>
+:root{color-scheme:light;font:16px system-ui,sans-serif;color:#172536;background:#f4f7fb}
+*{box-sizing:border-box}main{max-width:1030px;margin:auto;padding:24px}h1{margin:8px 0}h2{font-size:1.15rem}
+[hidden]{display:none!important}
+section,fieldset{background:#fff;border:1px solid #dce4ed;border-radius:10px;padding:16px;margin:16px 0}
+fieldset{margin:12px 0}legend{font-weight:650}a{color:#164fbd}p{line-height:1.6}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:12px}
+label{display:grid;gap:5px;font-size:.9rem}input,select,textarea,button{font:inherit;padding:8px;border:1px solid #9dadc0;border-radius:6px;min-width:0}
+button{background:#fff;cursor:pointer}button:disabled{cursor:default;opacity:.55}
+.primary{background:#1f56cb;border-color:#1f56cb;color:#fff}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.muted{color:#52647a}.notice{background:#fff8e6;border-color:#f0d38e}.rows{padding:0 4px}
+table{border-collapse:collapse;width:100%;text-align:left}th,td{padding:7px;border-bottom:1px solid #dce4ed}td{overflow-wrap:anywhere}
+.overflow{overflow:auto}ul{padding-left:1.3rem}li{padding:4px 0}code{overflow-wrap:anywhere}
+</style>
+<script src="/api/research/workflow-controls.js" defer></script>
+</head>
+<body><main>
+<nav><a href="/research">回测研究中心</a> · <a href="/python-strategy">Python 策略工作台</a></nav>
+<h1>批量与滚动回测</h1>
+<p class="muted">填写方案、预检，再提交本机后台任务。每个窗口有独立报告。</p>
+<section class="notice">仅使用 2024–2025 年本机历史分钟数据，每段最多 31 个自然日。滚动验证使用固定参数，各段从初始资金和空仓开始。当前仅供研究，实时模拟盘未准入。</section>
+<form id="workflow-form">
+<fieldset><legend>共同设置</legend>
+<div class="grid">
+<label>实验类型<select id="kind"><option value="batch">同区间参数对照</option><option value="rolling">固定参数滚动验证</option><option value="symbols">多标的独立对照</option></select></label>
+<label>策略<select id="strategy"><option value="sma_cross">双均线交叉</option><option value="buy_hold">买入并持有</option><option value="custom_python">已登记的 Python 策略</option></select></label>
+<label id="symbol-field">证券代码<input id="symbol" value="000001.SZSE" required maxlength="16"></label>
+<label>初始资金（元）<input id="cash" type="number" min="0.01" step="0.01" value="100000" required></label>
+<label>目标资金比例<input id="fraction" type="number" min="0.0001" max="1" step="any" value="0.5" required></label>
+<label>成交额参与上限<input id="participation" type="number" min="0.0001" max="1" step="any" value="0.01" required></label>
+<label>佣金费率<input id="commission" type="number" min="0" step="any" value="0.00025" required></label>
+<label>最低佣金（元）<input id="minimum" type="number" min="0" step="any" value="5" required></label>
+<label>默认滑点（基点）<input id="slippage" type="number" min="0" step="any" value="5" required></label>
+</div>
+<div id="sma-fields" class="grid">
+<label>快线周期<input id="fast" type="number" min="1" max="240" value="5" required></label>
+<label>慢线周期<input id="slow" type="number" min="2" max="241" value="20" required></label>
+</div>
+<div id="custom-fields" hidden>
+<p class="muted">运行前可在 <a href="/python-strategy">Python 策略工作台</a> 核对登记编号并准备隔离环境。</p>
+<div class="grid">
+<label>策略登记编号<input id="source-id" list="registered-sources" maxlength="64" pattern="[0-9a-f]{64}" disabled></label>
+<datalist id="registered-sources"></datalist>
+<label>可见历史根数<input id="history-limit" type="number" min="1" max="241" value="60" disabled></label>
+<label>策略参数 JSON<textarea id="custom-params" rows="2" maxlength="4096" disabled>{}</textarea></label>
+</div>
+</div>
+</fieldset>
+<fieldset id="date-fields"><legend>共同日期</legend>
+<div class="grid">
+<label>开始日期<input id="start" type="date" min="2024-01-01" max="2025-12-31" value="2024-01-02" required></label>
+<label>结束日期<input id="end" type="date" min="2024-01-01" max="2025-12-31" value="2024-01-05" required></label>
+</div>
+</fieldset>
+<fieldset id="symbols-fields" hidden disabled><legend>对照标的</legend>
+<label>证券代码列表（每行一个，2–4 个）<textarea id="symbols" rows="4" maxlength="80" required>000001.SZSE
+000002.SZSE</textarea></label>
+<p class="muted">每个标的单独使用初始资金和空仓。结果按标的查看，不合并成组合收益。</p>
+</fieldset>
+<fieldset id="batch-fields"><legend>参数组</legend>
+<div class="rows" id="cases"></div>
+<button id="add-case" type="button">添加参数组</button>
+</fieldset>
+<fieldset id="rolling-fields" hidden disabled><legend>训练段与验证段</legend>
+<p class="muted">每折训练段在验证段之前，各验证段按时间排列且互不重叠。运行不会根据训练段结果改参数。</p>
+<div class="rows" id="folds"></div>
+<button id="add-fold" type="button">添加一折</button>
+</fieldset>
+<div class="actions">
+<button id="preview" type="submit">预检方案</button>
+<button id="run" type="button" class="primary" disabled>提交运行</button>
+<button id="retry" type="button" hidden>重试同一提交</button>
+</div>
+</form>
+<p id="action-status" role="status" aria-live="polite"></p>
+<section id="preview-panel" hidden><h2>预检结果</h2><p id="preview-summary"></p><ul id="preview-cases"></ul></section>
+<section><h2>已保存的实验</h2><button id="refresh" type="button">刷新列表</button>
+<p id="history-status" role="status" aria-live="polite"></p><ul id="history"></ul>
+<div id="job-panel" hidden><h2>实验进度</h2><p id="job-status"></p><p><a id="experiment-link">查看同组回测报告</a></p>
+<div class="overflow"><table><thead><tr><th>任务</th><th>日期</th><th>状态</th><th>报告</th></tr></thead><tbody id="job-cases"></tbody></table></div>
+<p id="job-note" class="muted"></p>
+</div></section>
+</main></body></html>

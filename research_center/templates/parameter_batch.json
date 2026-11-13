@@ -1,0 +1,17 @@
+{
+  "base": {
+    "strategy": "sma_cross",
+    "backend": "reference",
+    "symbol": "000001.SZSE",
+    "start": "2024-01-02",
+    "end": "2024-01-05",
+    "initial_cash": 100000,
+    "commission_rate": 0.00025,
+    "min_commission": 5,
+    "params": {"fast": 5, "slow": 20, "target_fraction": 0.5, "max_turnover_participation": 0.01}
+  },
+  "cases": [
+    {"label": "参考滑点 5 基点", "slippage_bps": 5},
+    {"label": "压力滑点 15 基点", "slippage_bps": 15}
+  ]
+}

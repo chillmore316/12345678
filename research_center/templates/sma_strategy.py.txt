@@ -1,0 +1,114 @@
+# -*- coding: utf-8 -*-
+"""
+SMA 双均线研究策略模板。
+
+仅供 RESEARCH_ONLY 历史分钟回放。接收已完成的历史 bar，不访问文件、网络、
+账户或宿主机；不自动下单。上传/静态语法检查通过不代表运行接口或数据已认证。
+
+接口：build_strategy(symbol, params) -> Strategy
+参数：fast（默认 5）、slow（默认 20），均为正整数且 fast < slow <= 240。
+状态：export_state() 必须返回 JSON 对象；restore_state(state) 必须可恢复该对象。
+依赖：strategy.base、Python 标准库、运行器已安装的 pandas / numpy；不自动安装依赖。
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from strategy.base import Bar, Context, Order, Strategy
+
+
+def _target_quantity(cash: float, reference_price: float, context: Context) -> int:
+    """按目标比例计算整手买入数量，并为佣金预留现金。"""
+    params = context.params
+    lot_size = 100
+    target_fraction = float(params.get("target_fraction", 0.5))
+    commission_rate = float(params.get("commission_rate", 0.00025))
+    min_commission = float(params.get("min_commission", 5.0))
+    slippage_bps = float(params.get("slippage_bps", 5.0))
+    price = reference_price * (1.0 + slippage_bps / 10_000.0)
+    target_cash = max(0.0, cash) * target_fraction
+    quantity = int(target_cash / (price * lot_size)) * lot_size
+    while quantity > 0:
+        notional = quantity * price
+        commission = max(notional * commission_rate, min_commission)
+        if notional + commission <= cash + 1e-9:
+            return quantity
+        quantity -= lot_size
+    return 0
+
+
+class SmaCrossStrategy(Strategy):
+    """使用已完成 bar 的收盘价计算双均线交叉，只做多且遵循 T+1 可卖数量。"""
+
+    def __init__(self, symbol: str, fast: int, slow: int) -> None:
+        self.symbol = symbol
+        self.fast = fast
+        self.slow = slow
+
+    def on_bar(self, bar: Bar, ctx: Context) -> list[Order]:
+        if ctx.params.get("_pending_side") or ctx.params.get("_sale_filled_this_bar"):
+            return []
+        history = ctx.history.get(self.symbol)
+        if history is None or len(history) < self.slow + 1:
+            return []
+
+        closes = history["close"].astype(float)
+        previous = closes.iloc[:-1]
+        previous_fast = float(previous.tail(self.fast).mean())
+        previous_slow = float(previous.tail(self.slow).mean())
+        current_fast = float(closes.tail(self.fast).mean())
+        current_slow = float(closes.tail(self.slow).mean())
+        position = ctx.positions.get(self.symbol, {})
+        quantity_held = int(position.get("quantity", 0))
+        available_to_sell = int(position.get("available_to_sell", 0))
+
+        crossed_up = previous_fast <= previous_slow and current_fast > current_slow
+        crossed_down = previous_fast >= previous_slow and current_fast < current_slow
+        if quantity_held == 0 and crossed_up:
+            quantity = _target_quantity(
+                ctx.cash, float(bar.ohlcv[self.symbol]["close"]), ctx
+            )
+            if quantity > 0:
+                return [Order(symbol=self.symbol, side="buy", quantity=quantity)]
+        # 入场日出现转弱时等待后续信号 bar，避免遗留隔夜卖单。
+        if quantity_held > 0 and available_to_sell > 0:
+            if crossed_down or current_fast < current_slow:
+                return [
+                    Order(
+                        symbol=self.symbol,
+                        side="sell",
+                        quantity=available_to_sell,
+                    )
+                ]
+        return []
+
+    def export_state(self) -> dict[str, Any]:
+        """策略由历史 bar 驱动，无额外状态需要保存。"""
+        return {}
+
+    def restore_state(self, state: dict[str, Any]) -> None:
+        """只接受本模板导出的空状态对象。"""
+        if not isinstance(state, dict) or state:
+            raise ValueError("SMA 策略状态必须是空 JSON 对象。")
+
+
+def _positive_integer(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} 必须是正整数。")
+    return value
+
+
+def build_strategy(symbol: str, params: dict[str, Any]) -> Strategy:
+    """隔离运行器的固定入口；默认参数与页面提供的 SMA 示例保持一致。"""
+    if not isinstance(symbol, str) or not symbol.strip():
+        raise ValueError("symbol 必须是非空证券代码。")
+    if not isinstance(params, dict):
+        raise TypeError("params 必须是 JSON 对象。")
+    fast = _positive_integer(params.get("fast", 5), "fast")
+    slow = _positive_integer(params.get("slow", 20), "slow")
+    if fast >= slow:
+        raise ValueError("fast 必须小于 slow。")
+    if slow > 240:
+        raise ValueError("slow 不能大于 240。")
+    return SmaCrossStrategy(symbol.strip(), fast, slow)

@@ -1,0 +1,12 @@
+# 已验收的 macOS Apple Silicon / Python 3.11 本地研究工作台依赖。
+# 安装仅用于研究工作台。VeighNa 原生基准及隔离虚拟机单独准备。
+certifi==2026.7.22
+charset-normalizer==3.4.9
+idna==3.18
+numpy==2.4.6
+pandas==3.0.5
+pyarrow==25.0.0
+python-dateutil==2.9.0.post0
+requests==2.34.2
+six==1.17.0
+urllib3==2.7.0

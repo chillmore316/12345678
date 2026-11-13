@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>接源检查记录</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f7fb;color:#203047;font:14px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}main{max-width:1280px;margin:auto;padding:24px}header{display:flex;justify-content:space-between;gap:16px;align-items:center}h1{font-size:26px;margin:0}h2{font-size:18px;margin:0 0 12px}p{margin:8px 0}nav{display:flex;gap:8px;flex-wrap:wrap}button,a.button{font:inherit;cursor:pointer;border:1px solid #cbd5e3;background:#fff;color:#20436e;border-radius:8px;padding:8px 12px;text-decoration:none}.notice{background:#fff6df;border:1px solid #ebd28f;padding:14px;border-radius:10px;margin:18px 0}.layout{display:grid;grid-template-columns:300px minmax(0,1fr);gap:16px}.panel{background:white;border:1px solid #dce3ed;border-radius:12px;padding:18px;min-width:0}.muted{color:#627287}.list{display:grid;gap:8px;max-height:560px;overflow:auto}.record{display:block;text-align:left;width:100%;color:#203047}.record small{display:block;color:#627287}.selected{background:#edf3ff;border-color:#2463eb}.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:16px 0}.card{padding:12px;background:#f7f9fc;border:1px solid #e0e6ef;border-radius:8px}.card strong{display:block;font-size:17px}.table{overflow:auto}table{border-collapse:collapse;width:100%;white-space:nowrap}th,td{text-align:left;padding:10px;border-bottom:1px solid #e0e6ee;font-size:13px}th{background:#edf2f8}.flags{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}.flags span{background:#fff4df;color:#7b5617;padding:5px 9px;border-radius:6px}.hash{overflow-wrap:anywhere;font-size:12px;color:#627287}.hidden{display:none!important}details{margin-top:18px}summary{cursor:pointer}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;background:#f7f9fc;padding:10px;border-radius:8px}@media(max-width:850px){header{flex-direction:column;align-items:flex-start}.layout{grid-template-columns:1fr}.cards{grid-template-columns:1fr}.list{max-height:240px}}
+</style></head><body><main>
+<header><div><h1>接源检查记录</h1><p class="muted">回看本机已经执行的有界接口检查。</p></div><nav><a class="button" href="/research">返回回测</a><a class="button" href="/data-check">数据候选</a><a class="button" href="/replay">历史模拟演练</a><button id="refresh">刷新记录</button></nav></header>
+<div class="notice"><strong>历史检查视图 · RESEARCH_ONLY</strong><br>此页只读取已保存的检查记录，不向供应商发请求，不启动策略或账户。样本返回成功不代表完整权限、使用许可、连续覆盖或模拟盘准入。</div>
+<div class="layout"><aside class="panel"><h2>检查历史</h2><p id="list-status" role="status" class="muted">正在读取…</p><div id="records" class="list"></div><details><summary>如何发起新的检查</summary><p>让 Codex 显式选择现有源后使用本机命令；每次最多两次请求，不自动重试或切换源。刷新页面不会重发请求。</p><pre>.venv311/bin/python -m research_center.cli source check --provider promax --symbol 510300.SH</pre><p class="muted">也可显式选择 datahub。凭证只从本机已有配置读取，不填入网页。</p></details></aside>
+<section class="panel"><h2 id="title">选择检查记录</h2><p id="status" class="muted" role="status">从左侧选择一次历史检查。</p><div id="detail" class="hidden"><div id="cards" class="cards"></div><p id="request-window" class="muted"></p><div class="table"><table><thead><tr><th>检查项</th><th>接口响应</th><th>记录数</th><th>最新样本日期 / 时间</th><th>时间状态</th><th>距检查时刻</th></tr></thead><tbody id="rows"></tbody></table></div><p class="muted">时间差固定在该次检查时刻，并非当前行情延迟。日线只表示样本日期，没有证明盘中可用时刻；分钟标签及量额单位仍未认证。工作日也不等于已核实的交易日。</p><div class="flags"><span>来源及许可：未认证</span><span>覆盖及价格口径：未认证</span><span>分钟标签及量额：未认证</span><span>模拟盘准入：未通过</span></div><p id="sample-progression" class="muted"></p><p id="request-count" class="muted"></p><p id="receipt-id" class="hash"></p></div></section></div>
+</main><script>
+(function(){
+ 'use strict';
+ var state={items:[],selected:'',listRequest:0,detailRequest:0};
+ var providers={promax:'Promax',datahub:'Datahub'};
+ var outcomes={sample_received:'收到样本',empty:'返回空表',http_denied:'请求被拒绝',http_error:'HTTP 异常',transport_error:'连接失败',timeout:'检查超时',invalid_response:'响应不合格',invalid_sample:'样本格式或数值不合格',credential_unavailable:'凭证不可用'};
+ var temporal={no_valid_sample:'无有效样本',daily_history_sample:'仅有日期，时点未认证',weekend_sample:'周末样本',outside_regular_hours_sample:'常规时段外样本',calendar_unverified_recent_sample:'时间较近，交易日未认证',stale_sample:'已过期，不能用于执行',future_stamp:'样本时间在检查之后'};
+ function id(name){return document.getElementById(name);}
+ function node(tag,value){var n=document.createElement(tag);if(value!==undefined)n.textContent=String(value);return n;}
+ function text(name,value){id(name).textContent=String(value);}
+ function validId(value){return typeof value==='string'&&/^[a-f0-9]{32}$/.test(value);}
+ function validTime(value){return typeof value==='string'&&value.length<=40&&/(Z|[+-]\d{2}:\d{2})$/.test(value)&&Number.isFinite(Date.parse(value));}
+ function symbol(value){return typeof value==='string'&&/^(5\d{5}\.SH|1\d{5}\.SZ)$/.test(value);}
+ function integer(value,max){return Number.isInteger(value)&&value>=0&&value<=max;}
+ function clock(value){return new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false});}
+ function validSummary(row){if(!row||!validId(row.check_id)||row.mode!=='RESEARCH_ONLY'||row.paper_admission!==false)return false;if(row.status==='CHECK_REQUIRED')return row.provider===null&&row.symbol===null&&row.observed_at===null;return row.status==='SAVED_SAMPLE'&&Object.hasOwn(providers,row.provider)&&symbol(row.symbol)&&validTime(row.observed_at);}
+ function validDetail(value){
+  if(!value||!validId(value.check_id)||!Object.hasOwn(providers,value.provider)||!symbol(value.symbol)||!validTime(value.observed_at)||typeof value.daily_start!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(value.daily_start)||typeof value.daily_end!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(value.daily_end)||value.mode!=='RESEARCH_ONLY'||['raw_payload_saved','source_certification','timestamp_semantics_verified','coverage_complete','paper_admission','runtime_changed'].some(function(key){return value[key]!==false;})||!integer(value.network_attempts,2)||value.retry_count!==0||!Array.isArray(value.checks)||value.checks.length!==2)return false;
+  return value.checks.every(function(row,index){return row&&row.kind===['daily','minute'][index]&&Object.hasOwn(outcomes,row.outcome)&&Object.hasOwn(temporal,row.temporal_state)&&integer(row.rows,index?15:7)&&(row.http_status===null||(integer(row.http_status,599)&&row.http_status>=100))&&(row.latest_time===null||validTime(row.latest_time))&&(row.age_seconds===null||(typeof row.age_seconds==='number'&&Number.isFinite(row.age_seconds)))&&(row.rows>0?(row.outcome==='sample_received'&&row.http_status===200&&row.latest_time!==null):(row.outcome!=='sample_received'&&row.latest_time===null&&row.age_seconds===null));});
+ }
+ function clear(message){id('detail').classList.add('hidden');id('cards').replaceChildren();id('rows').replaceChildren();['request-window','request-count','receipt-id','sample-progression'].forEach(function(name){text(name,'');});text('title','接源检查记录');text('status',message);}
+ async function get(path){var response=await fetch(path,{headers:{Accept:'application/json'}});if(!response.ok)throw new Error('read failed');return response.json();}
+ function list(){id('records').replaceChildren();state.items.forEach(function(row){var button=node('button');button.className='record'+(row.check_id===state.selected?' selected':'');button.append(node('span',row.status==='CHECK_REQUIRED'?'记录损坏，需核查':providers[row.provider]+' · '+row.symbol),node('small',row.observed_at?clock(row.observed_at)+'（北京时间）':row.check_id));button.addEventListener('click',function(){open(row.check_id,true);});id('records').append(button);});}
+ function render(record){
+  if(!validDetail(record))throw new Error('invalid receipt');
+  text('title',providers[record.provider]+' · '+record.symbol);text('status','已读取历史检查收据；不代表该数据源当前可交易。');
+  id('cards').replaceChildren();[['检查时刻（北京时间）',clock(record.observed_at)],['日线样本',record.checks[0].rows+' 行'],['分钟样本',record.checks[1].rows+' 行']].forEach(function(pair){var card=node('div');card.className='card';card.append(node('span',pair[0]),node('strong',pair[1]));id('cards').append(card);});
+  text('request-window','日线请求区间：'+record.daily_start+' 至 '+record.daily_end+'（自然日；完整交易日覆盖未认证）');
+  id('rows').replaceChildren();record.checks.forEach(function(row){var tr=node('tr');var age=row.age_seconds===null?'未核实时点':row.age_seconds<0?'未来时间 '+Math.abs(row.age_seconds).toFixed(0)+' 秒':Math.floor(row.age_seconds/3600)+' 小时 '+Math.floor(row.age_seconds%3600/60)+' 分钟';[row.kind==='daily'?'基金日线':'分钟小样本',outcomes[row.outcome]+(row.http_status===null?'':' · HTTP '+row.http_status),row.rows,row.latest_time?(row.kind==='daily'?row.latest_time.slice(0,10):clock(row.latest_time)+'（北京时间）'):'未取得',temporal[row.temporal_state],age].forEach(function(value){tr.append(node('td',value));});id('rows').append(tr);});
+  text('request-count','本次记录请求 '+record.network_attempts+' 次；自动重试 '+record.retry_count+' 次。未保存密钥、原始响应或价格，未更改运行账户。');text('receipt-id','收据编号：'+record.check_id+'。内容哈希只证明冻结字节一致，不能认证供应商。');id('detail').classList.remove('hidden');
+ }
+ async function comparePrevious(record,request){
+  var earlier=state.items.filter(function(row){
+   return row.status==='SAVED_SAMPLE'&&row.provider===record.provider&&row.symbol===record.symbol&&
+    Date.parse(row.observed_at)<Date.parse(record.observed_at);
+  }).sort(function(a,b){return Date.parse(b.observed_at)-Date.parse(a.observed_at);})[0];
+  if(!earlier){text('sample-progression','当前历史摘要没有更早的同源同标的记录。');return;}
+  text('sample-progression','正在对照上一条同源同标的记录…');
+  try{
+   var previous=await get('/api/research/source-checks/'+earlier.check_id);
+   if(request!==state.detailRequest)return;
+   if(!validDetail(previous)||previous.check_id!==earlier.check_id||previous.provider!==record.provider||
+      previous.symbol!==record.symbol||previous.observed_at!==earlier.observed_at)throw new Error('invalid prior record');
+   var now=record.checks[1],before=previous.checks[1],message;
+   if(now.latest_time===null||before.latest_time===null)message='至少一次检查未取得有效分钟样本，无法比较时间推进。';
+   else{
+    var advance=Date.parse(now.latest_time)-Date.parse(before.latest_time);
+    message=advance===0?'两次返回的分钟时间相同，尚未观察到推进。':advance<0?
+     '本次分钟时间早于上次，需核查数据回退。':'返回的分钟时间前进了 '+(advance/1000)+' 秒。';
+   }
+   text('sample-progression','与 '+clock(previous.observed_at)+' 的已保存检查相比，'+message+' 两次观察不能证明窗口连续覆盖。');
+  }catch(_error){if(request===state.detailRequest)text('sample-progression','上一条记录未通过读取或校验，未作时间对照。');}
+ }
+ async function open(ident,hash){if(!validId(ident))return;state.selected=ident;var request=++state.detailRequest;clear('正在读取并校验历史收据…');list();if(hash)window.location.hash=ident;try{var value=await get('/api/research/source-checks/'+ident);if(request!==state.detailRequest)return;if(value.check_id!==ident)throw new Error('wrong receipt');render(value);await comparePrevious(value,request);}catch(_error){if(request===state.detailRequest)clear('收据不存在、已损坏或校验失败；未显示旧详情。');}}
+ function selectedHash(){try{var value=decodeURIComponent(window.location.hash.replace(/^#/,''));return validId(value)?value:'';}catch(_error){return '';}}
+ async function refresh(){var request=++state.listRequest;text('list-status','正在读取…');try{var value=await get('/api/research/source-checks');if(request!==state.listRequest)return;if(!value||!Array.isArray(value.records)||value.records.length>100||typeof value.truncated!=='boolean'||value.records.some(function(row){return !validSummary(row);})||new Set(value.records.map(function(row){return row.check_id;})).size!==value.records.length)throw new Error('invalid list');state.items=value.records;list();text('list-status',value.truncated?'本次显示 '+state.items.length+' 条；扫描或显示达到上限，结果不完整，不能据此判断库为空。':state.items.length?'本次显示 '+state.items.length+' 条检查记录。':'尚无检查记录。');var preferred=state.selected||selectedHash()||(state.items[0]&&state.items[0].check_id);if(preferred)await open(preferred,false);else{state.detailRequest++;clear(value.truncated?'结果不完整；可使用已知收据链接或让 Codex 核查记录。':'尚无检查记录。可让 Codex 显式发起一次有界检查。');}}catch(_error){if(request!==state.listRequest)return;state.items=[];state.detailRequest++;list();text('list-status','读取失败');clear('检查列表读取失败；旧详情已清空。');}}
+ id('refresh').addEventListener('click',refresh);window.addEventListener('hashchange',function(){var ident=selectedHash();if(ident&&ident!==state.selected)open(ident,false);});state.ready=refresh();window.SourceChecksUI={state:state,refresh:refresh,open:open,ready:state.ready};
+})();
+</script></body></html>

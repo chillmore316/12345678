@@ -1,0 +1,16 @@
+.DS_Store
+__pycache__/
+.venv*/
+.env*
+.secrets/
+/.vntrader/
+/results/
+/research/
+/data/*
+!/data/__init__.py
+!/data/joinquant_minute.py
+*.parquet
+*.sqlite*
+*.db*
+
+/闲鱼商品_A股1分钟数据_聚宽版/

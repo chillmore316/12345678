@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Python 策略回放 · 本地量化研究中心</title>
+  <style>
+    :root{color-scheme:light;--bg:#f4f7fb;--surface:#fff;--soft:#f8fafc;--ink:#172536;--muted:#627286;--line:#dce4ed;--blue:#2463eb;--blue-soft:#eaf1ff;--green:#087a53;--red:#b42332;--amber:#875900;--amber-bg:#fff6dc;--shadow:0 8px 24px rgba(30,48,72,.06)}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}button,input,select,textarea{font:inherit}button{cursor:pointer}main{max-width:1180px;margin:0 auto;padding:24px}.topbar{display:flex;justify-content:space-between;align-items:flex-start;gap:18px;margin-bottom:16px}.eyebrow{margin:0 0 4px;color:var(--blue);font-size:12px;font-weight:700;letter-spacing:.04em}h1{font-size:26px;line-height:1.25;margin:0 0 5px;letter-spacing:-.02em}h2{font-size:17px;margin:0}.subtitle{margin:0;color:var(--muted)}.top-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.btn{display:inline-flex;justify-content:center;align-items:center;gap:6px;min-height:38px;padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);font-weight:650;text-decoration:none}.btn:hover:not(:disabled){border-color:#aebfd1;background:var(--soft)}.btn:disabled{opacity:.55;cursor:not-allowed}.btn-primary{background:var(--blue);border-color:var(--blue);color:#fff}.btn-primary:hover:not(:disabled){background:#174fc7;border-color:#174fc7}.btn-small{min-height:31px;padding:5px 9px;font-size:12px}.pill{display:inline-flex;align-items:center;min-height:29px;padding:4px 10px;border:1px solid #d5e2ff;border-radius:99px;background:var(--blue-soft);color:#1750bd;font-weight:700;white-space:nowrap}.notice{padding:13px 15px;margin:0 0 16px;border:1px solid #f1d58d;border-left:4px solid #d99413;border-radius:10px;background:var(--amber-bg);color:#5f4610}.notice strong{color:#563a00}.notice p{margin:3px 0}.layout{display:grid;grid-template-columns:minmax(280px,.82fr) minmax(0,1.18fr);gap:15px;align-items:start}.stack{display:grid;gap:15px;min-width:0}.panel{min-width:0;padding:17px;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}.panel-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}.panel-head p{margin:3px 0 0}.caption,.muted{color:var(--muted)}.caption{font-size:12px}.field{display:grid;gap:5px;margin:0 0 12px}.field label{color:#41536a;font-size:12px;font-weight:650}.field input,.field select,.field textarea{width:100%;min-height:39px;padding:8px 10px;border:1px solid #cbd6e2;border-radius:8px;background:#fff;color:var(--ink);outline:none}.field textarea{min-height:86px;resize:vertical;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}.field input:focus,.field select:focus,.field textarea:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(36,99,235,.12)}.field input[type=file]{padding:7px}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:10px}.three-col{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.form-note{margin:2px 0 11px;color:var(--muted);font-size:12px}.form-divider{border:0;border-top:1px solid var(--line);margin:14px 0}.checkline{display:flex;align-items:flex-start;gap:8px;margin:3px 0 12px;color:#41536a;font-size:12px}.checkline input{margin-top:3px}.inline-status{min-height:21px;margin:8px 0 0;color:var(--muted);font-size:12px}.inline-status.error{color:var(--red)}.inline-status.success{color:var(--green)}.source-list{display:grid;gap:8px;max-height:295px;overflow:auto}.source-row{display:block;width:100%;padding:10px 11px;text-align:left;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink)}.source-row:hover{border-color:#9bb4e2;background:#fbfdff}.source-row.selected{border-color:var(--blue);background:#fbfdff;box-shadow:0 0 0 2px rgba(36,99,235,.11)}.source-row-title{display:block;font-weight:700;overflow-wrap:anywhere}.source-row-meta{display:block;margin-top:3px;color:var(--muted);font-size:11px;overflow-wrap:anywhere}.empty{padding:14px 12px;border:1px dashed #cbd6e2;border-radius:9px;color:var(--muted);text-align:center}.inventory{margin-top:10px;padding:9px 10px;border-radius:8px;background:var(--soft);color:#53647a;font-size:11px;overflow-wrap:anywhere}.meta-grid{display:grid;grid-template-columns:145px minmax(0,1fr);gap:7px 10px;margin:0;font-size:12px}.meta-grid dt{color:var(--muted)}.meta-grid dd{margin:0;overflow-wrap:anywhere}.hash{font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all}.status-badge{display:inline-flex;align-items:center;padding:2px 8px;border:1px solid var(--line);border-radius:99px;background:#f5f7fa;color:#52647a;font-size:11px}.status-running{border-color:#c5d7fb;background:#edf3ff;color:#164fbd}.status-complete{border-color:#bfe5d3;background:#e5f5ee;color:var(--green)}.status-failed{border-color:#f1c4c8;background:#fff0f0;color:var(--red)}.run-box{padding:13px;border:1px solid var(--line);border-radius:9px;background:var(--soft)}.run-top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}.run-top strong{overflow-wrap:anywhere}.progress-track{height:8px;margin:12px 0 5px;border-radius:99px;background:#e6ecf3;overflow:hidden}.progress-fill{height:100%;width:0;background:var(--blue);border-radius:inherit;transition:width .2s}.run-message{margin:7px 0;color:var(--muted);font-size:12px;overflow-wrap:anywhere}.run-link{display:inline-block;margin-top:6px;font-weight:650}.hidden{display:none!important}a{color:#164fbd}footer{margin:16px 2px 4px;color:var(--muted);font-size:12px}
+    @media(max-width:800px){main{padding:14px}.topbar{display:block}.top-actions{margin-top:11px}.layout{grid-template-columns:1fr}.source-list{max-height:240px}}
+    @media(max-width:520px){h1{font-size:23px}.panel{padding:14px}.two-col,.three-col{grid-template-columns:1fr;gap:0}.meta-grid{grid-template-columns:115px minmax(0,1fr)}.top-actions{align-items:flex-start}.run-top{display:block}}
+  </style>
+</head>
+<body>
+<main>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">本地量化研究工具</p>
+      <h1>Python 策略上传与历史回放</h1>
+      <p class="subtitle">上传实际 Python 文件，登记不可覆盖的版本，再单独提交历史研究任务。</p>
+      <div>
+        <button class="btn" type="button" id="runtime-prepare">准备隔离环境</button>
+        <span id="runtime-prepare-status" role="status" aria-live="polite"></span>
+      </div>
+    </div>
+    <div class="top-actions">
+      <a class="btn" href="/research">回测研究中心</a>
+      <span class="pill">仅供研究 · 模拟盘未准入</span>
+    </div>
+  </header>
+
+  <section class="notice" aria-label="研究与运行边界">
+    <strong>研究限制</strong>
+    <p>页面只把 Python 源码上传到研究服务；浏览器不会执行代码。运行请求交给独立隔离环境。登记或语法检查通过不代表策略接口、依赖或运行环境已验证。</p>
+    <p>当前只开放 2024–2025 年、单只 A 股、最多 31 个自然日的分钟历史回放。已有冻结检查记录过价格口径不一致；数据认证和模拟盘准入均未通过。本页没有实时运行或下单功能。</p>
+  </section>
+
+  <div class="layout">
+    <div class="stack">
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>登记 Python 文件</h2><p class="caption">文件只作为源码归档；登记后不会自动运行。</p></div>
+          <a class="btn btn-small" href="/api/research/custom-sources/template.py" download="strategy.py">下载 SMA 模板</a>
+        </div>
+        <details><summary>让 AI 编写策略时使用的接口</summary><p class="caption">请让 AI 基于下载的模板修改，保留 build_strategy(symbol, params)、on_bar(bar, ctx)、export_state() 和 restore_state(state)。只使用已完成的历史行情，每根分钟线最多返回一笔同标的整手市价订单；状态需为不超过 16 KiB 的 JSON 对象。生成 .py 文件后在此登记。</p></details>
+        <form id="source-form">
+          <div class="field">
+            <label for="source-file">Python 源文件（最大 64 KiB）</label>
+            <input id="source-file" type="file" accept=".py,text/x-python,text/plain" required>
+          </div>
+          <div class="field"><label for="source-name">版本名称</label><input id="source-name" maxlength="120" required placeholder="例如：双均线实验 1"></div>
+          <div class="field"><label for="source-description">说明（可选）</label><textarea id="source-description" maxlength="1000" style="min-height:64px;font:inherit" placeholder="记录这版策略的用途或改动"></textarea></div>
+          <div class="field">
+            <label for="new-default-params">这版策略的默认参数（JSON 对象）</label>
+            <textarea id="new-default-params" spellcheck="false">{
+  "fast": 5,
+  "slow": 20
+}</textarea>
+            <span class="form-note">这是策略自己的参数，与下方的资金比例、换手限制等回放风险设置分开保存。</span>
+          </div>
+          <label class="checkline"><input id="new-version" type="checkbox"><span>把所选版本作为父版本登记为新版本（不会覆盖旧版本）</span></label>
+          <button class="btn btn-primary full" id="register-btn" type="submit">登记为新版本</button>
+          <p class="inline-status" id="source-form-status" role="status" aria-live="polite"></p>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><div><h2>所选版本信息</h2><p class="caption">仅显示登记元数据，不自动导出源码。</p></div></div>
+        <div id="source-detail" class="empty">从版本库选择一条记录。</div>
+        <p class="inline-status" id="source-detail-status" role="status" aria-live="polite"></p>
+      </section>
+    </div>
+
+    <div class="stack">
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>源码版本库</h2><p class="caption">每个版本按源文件哈希留档；下方完整性信息来自服务端。</p></div>
+          <button class="btn btn-small" id="refresh-sources" type="button">刷新</button>
+        </div>
+        <p class="inline-status" id="source-list-status" role="status" aria-live="polite">正在读取版本库…</p>
+        <div class="source-list" id="source-list" aria-label="已登记的 Python 源码版本"></div>
+        <div class="inventory" id="inventory-status">尚未读取目录状态。</div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><div><h2>创建历史回放</h2><p class="caption">先选一个已登记版本，再明确点击提交。任务和报告保存在本机，关闭页面后仍可查看。</p></div></div>
+        <form id="run-form">
+          <div class="field">
+            <label for="custom-params">策略参数（JSON 对象）</label>
+            <textarea id="custom-params" spellcheck="false" placeholder="选择策略版本后自动载入默认参数">{
+}</textarea>
+            <span class="form-note">只传给所选 Python 策略；请按该策略支持的字段填写。历史从所选日期逐根累积，不补读更早数据；SMA 慢线为 20 时，可见历史上限至少设为 21。</span>
+          </div>
+          <div class="two-col">
+            <div class="field"><label for="history-limit">策略可见历史上限（1–241 根分钟线）</label><input id="history-limit" type="number" min="1" max="241" step="1" value="60" required></div>
+            <div class="field"><label for="symbol">证券代码</label><input id="symbol" value="000001.SZSE" autocomplete="off" spellcheck="false" required><span class="form-note">单只深市或沪市主板 A 股。</span></div>
+          </div>
+          <div class="two-col">
+            <div class="field"><label for="start">开始日期</label><input id="start" type="date" min="2024-01-01" max="2025-12-31" value="2024-01-02" required></div>
+            <div class="field"><label for="end">结束日期</label><input id="end" type="date" min="2024-01-01" max="2025-12-31" value="2024-01-05" required></div>
+          </div>
+          <div class="field"><label for="initial-cash">初始资金（元）</label><input id="initial-cash" type="number" min="0.01" step="0.01" value="100000" required></div>
+          <details>
+            <summary>回放与风险设置</summary>
+            <div style="padding-top:12px">
+              <div class="two-col">
+                <div class="field"><label for="target-fraction">目标资金比例（0–1）</label><input id="target-fraction" type="number" min="0.01" max="1" step="0.01" value="0.5"></div>
+                <div class="field"><label for="max-turnover">成交额参与比例（最高 10%）</label><input id="max-turnover" type="number" min="0.0001" max="0.1" step="0.001" value="0.01"></div>
+              </div>
+              <div class="three-col">
+                <div class="field"><label for="commission-rate">佣金费率</label><input id="commission-rate" type="number" min="0" step="0.00001" value="0.00025"></div>
+                <div class="field"><label for="min-commission">最低佣金（元）</label><input id="min-commission" type="number" min="0" step="0.1" value="5"></div>
+                <div class="field"><label for="slippage-bps">滑点（基点）</label><input id="slippage-bps" type="number" min="0" step="1" value="5"></div>
+              </div>
+              <p class="form-note">费用和限制按填写值提交；具体撮合、数据和可用依赖由隔离运行器校验。</p>
+            </div>
+          </details>
+          <div class="field" style="margin-top:12px"><label for="run-label">实验名称（可选）</label><input id="run-label" maxlength="80" placeholder="例如：SMA 5/20 训练期回放"></div>
+          <p class="form-note">后端固定为“隔离 Python 回放”。不安装用户依赖；目前仅允许 Python、pandas、numpy 与标准库。</p>
+          <button class="btn btn-primary full" id="run-btn" type="submit" disabled>提交历史回放</button>
+          <p class="inline-status" id="run-form-status" role="status" aria-live="polite">请先从版本库选择一个 Python 策略版本。</p>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><div><h2>运行状态</h2><p class="caption">这里只显示服务端实际保存的任务状态，不绘制示例收益曲线。</p></div></div>
+        <div id="run-empty" class="empty">尚未提交或打开一条回放任务。</div>
+        <div id="run-box" class="run-box hidden" aria-live="polite">
+          <div class="run-top"><strong id="run-title">正在读取任务…</strong><span id="run-badge" class="status-badge">读取中</span></div>
+          <div class="progress-track"><div class="progress-fill" id="run-progress"></div></div>
+          <div class="caption" id="run-progress-label">进度待服务端返回</div>
+          <p class="run-message" id="run-message"></p>
+          <a class="run-link hidden" id="report-link" href="/research">打开已保存的回测报告</a>
+          <a class="run-link hidden" id="python-replay-link" href="/python-replay">创建历史模拟演练</a>
+          <p class="inline-status" id="run-read-status" role="status" aria-live="polite"></p>
+        </div>
+      </section>
+    </div>
+  </div>
+  <footer>本页把源码、运行参数和回放记录分开保存。语法通过不代表策略正确；本地历史结果不代表在线运行能力、收益保证或模拟盘准入。</footer>
+</main>
+<script>
+(function(){
+  'use strict';
+  var state={sources:[],selectedId:'',selectedSource:null,parentRunId:'',listRequest:0,detailRequest:0,runId:'',runGeneration:0,pollTimer:null,submittingSource:false,submittingRun:false};
+  function byId(name){return document.getElementById(name);}
+  function node(tag,className,text){var item=document.createElement(tag);if(className)item.className=className;if(text!==undefined&&text!==null)item.textContent=String(text);return item;}
+  function clear(item){if(item)item.replaceChildren();}
+  function setStatus(item,message,kind){if(!item)return;item.textContent=message||'';item.classList.remove('error','success');if(kind)item.classList.add(kind);}
+  function setText(item,value){if(item)item.textContent=value===undefined||value===null?'未提供':String(value);}
+  function safeSourceId(value){var text=String(value||'');return /^[a-fA-F0-9]{64}$/.test(text)?text:'';}
+  function safeRunId(value){var text=String(value||'');return /^[a-fA-F0-9]{32}$/.test(text)?text:'';}
+  function countText(value){return Number.isSafeInteger(value)&&value>=0?String(value):'未提供';}
+  function errorText(error,fallback){var message=String(error&&error.message||'');if(/[\u3400-\u9fff]/.test(message))return message.slice(0,240);return fallback;}
+  function parseObject(raw,label){var value;try{value=JSON.parse(raw);}catch(_error){throw new Error(label+'必须是有效 JSON。');}if(value===null||Array.isArray(value)||typeof value!=='object')throw new Error(label+'必须是 JSON 对象。');return value;}
+  async function api(path,options){
+    var response;
+    try{response=await fetch(path,Object.assign({credentials:'same-origin',cache:'no-store'},options||{}));}catch(_error){throw new Error('无法连接本机研究服务，请确认研究中心正在运行。');}
+    var body=null;var type=response.headers.get('content-type')||'';
+    if(type.indexOf('application/json')>=0){try{body=await response.json();}catch(_error){throw new Error('研究服务返回了无法读取的 JSON。');}}
+    if(!response.ok){var message=body&&(body.error||body.message||body.detail);throw new Error(typeof message==='string'?message:'HTTP_'+response.status);}
+    if(!body||typeof body!=='object')throw new Error('研究服务未返回有效的 JSON 记录。');
+    return body;
+  }
+  function makeMetaRow(root,label,value,className){
+    root.append(node('dt','',label),node('dd',className||'',value===undefined||value===null?'未提供':String(value)));
+  }
+  function showSourceDetail(record,loadingMessage){
+    var root=byId('source-detail');clear(root);
+    if(!record){root.className='empty';root.textContent=loadingMessage||'从版本库选择一条记录。';return;}
+    root.className='';var grid=node('dl','meta-grid');
+    makeMetaRow(grid,'版本名称',record.name);makeMetaRow(grid,'说明',record.description||'未填写');
+    makeMetaRow(grid,'版本登记 ID',record.registration_id,'hash');makeMetaRow(grid,'源文件 SHA-256',record.source_sha256,'hash');
+    makeMetaRow(grid,'代码版本（原始 SHA）',record.code_version,'hash');makeMetaRow(grid,'记录 SHA-256',record.record_sha256,'hash');
+    makeMetaRow(grid,'声明的 import 根',JSON.stringify(record.declared_import_roots||[]),'hash');
+    makeMetaRow(grid,'依赖声明状态',record.import_declaration_status);
+    makeMetaRow(grid,'运行接口已验证',record.runtime_interface_verified===true?'是':record.runtime_interface_verified===false?'否':'未提供');
+    makeMetaRow(grid,'依赖已验证',record.dependencies_verified===true?'是':record.dependencies_verified===false?'否':'未提供');
+    makeMetaRow(grid,'研究模式',record.mode);makeMetaRow(grid,'模拟盘准入',record.paper_admission===false?'否':record.paper_admission===true?'是':'未提供');
+    makeMetaRow(grid,'创建时间',record.created_at);makeMetaRow(grid,'父版本 ID',record.parent_id||'无');
+    var defaults=node('pre','hash',JSON.stringify(record.default_params||{},null,2));defaults.style.gridColumn='1 / -1';defaults.style.margin='7px 0 0';defaults.style.padding='9px';defaults.style.background='#f8fafc';defaults.style.whiteSpace='pre-wrap';defaults.textContent='默认参数：\n'+JSON.stringify(record.default_params||{},null,2);
+    root.append(grid,defaults);
+  }
+  function sourceRecordName(record){return String(record&&record.name||'未命名版本');}
+  function renderSources(data){
+    var root=byId('source-list');clear(root);state.sources=[];
+    var records=Array.isArray(data.sources)?data.sources:[];
+    state.sources=records.filter(function(record){return record&&safeSourceId(record.registration_id);});
+    var invalid=records.length-state.sources.length;
+    if(!state.sources.length){root.append(node('div','empty',data.empty===true&&data.complete===true?'版本库目前为空。':'当前没有可显示的版本记录。'));}
+    state.sources.forEach(function(record){
+      var id=safeSourceId(record.registration_id);var button=node('button','source-row'+(id===state.selectedId?' selected':''));
+      button.type='button';button.setAttribute('data-source-id',id);
+      button.append(node('span','source-row-title',sourceRecordName(record)));
+      button.append(node('span','source-row-meta','创建：'+String(record.created_at||'未提供')+' · 版本：'+String(record.code_version||record.source_sha256||'未提供').slice(0,20)));
+      button.append(node('span','source-row-meta','接口已验证：'+(record.runtime_interface_verified===true?'是':'否/未提供')+' · 依赖已验证：'+(record.dependencies_verified===true?'是':'否/未提供')));
+      button.addEventListener('click',function(){selectSource(id);});
+      root.append(button);
+    });
+    var inventory=[
+      '服务状态：'+String(data.status||'未提供'),
+      '枚举：'+(data.complete===true?'完整':data.complete===false?'不完整':'未提供'),
+      '空目录：'+(data.empty===true?'是':data.empty===false?'否':'未提供'),
+      '扫描条目：'+countText(data.scanned_entries),
+      '有效版本：'+countText(data.scanned_valid_count),
+      '损坏：'+countText(data.corrupt_count),
+      '忽略：'+countText(data.ignored_count),
+      '扫描达到上限：'+(data.scan_limit_reached===true?'是':data.scan_limit_reached===false?'否':'未提供'),
+      '版本列表截断：'+(data.records_truncated===true?'是':data.records_truncated===false?'否':'未提供'),
+      '返回记录：'+countText(data.returned_count)
+    ];
+    if(invalid)inventory.push('无效 ID 未显示：'+invalid);
+    setText(byId('inventory-status'),inventory.join(' · '));
+  }
+  async function refreshSources(preferId){
+    var request=++state.listRequest;state.detailRequest++;
+    state.sources=[];state.selectedId='';state.selectedSource=null;
+    clear(byId('source-list'));showSourceDetail(null,'正在读取版本库…');
+    setText(byId('inventory-status'),'正在读取目录完整性信息…');
+    setStatus(byId('source-list-status'),'正在读取版本库…','');
+    setStatus(byId('source-detail-status'),'','');
+    setStatus(byId('run-form-status'),'请先从版本库选择一个 Python 策略版本。','');
+    updateRunButton();
+    try{
+      var data=await api('/api/research/custom-sources');
+      if(request!==state.listRequest)return;
+      if(!Array.isArray(data.sources))throw new Error('服务端未返回源码版本列表。');
+      renderSources(data);
+      setStatus(byId('source-list-status'),'已读取 '+state.sources.length+' 条有效版本记录。'+(data.complete===false?' 服务端标记为不完整，请勿把缺失列表当成空目录。':''),'success');
+      if(preferId)await selectSource(preferId);
+    }catch(error){
+      if(request!==state.listRequest)return;
+      state.sources=[];state.selectedId='';state.selectedSource=null;clear(byId('source-list'));
+      showSourceDetail(null,'读取失败；没有可用的版本详情。');
+      setText(byId('inventory-status'),'目录状态不可用。');
+      setStatus(byId('source-list-status'),errorText(error,'读取版本库失败，请稍后重试。'),'error');
+      updateRunButton();
+    }
+  }
+  async function selectSource(sourceId){
+    state.parentRunId='';
+    var id=safeSourceId(sourceId);if(!id)return;
+    var request=++state.detailRequest;state.selectedId=id;state.selectedSource=null;
+    document.querySelectorAll('.source-row').forEach(function(button){button.classList.toggle('selected',button.getAttribute('data-source-id')===id);});
+    showSourceDetail(null,'正在读取所选版本的登记详情…');
+    setStatus(byId('source-detail-status'),'','');setStatus(byId('run-form-status'),'正在读取所选版本详情…','');updateRunButton();
+    try{
+      var record=await api('/api/research/custom-sources/'+encodeURIComponent(id));
+      record=record.record||record;
+      if(request!==state.detailRequest)return;
+      if(!record||safeSourceId(record.registration_id)!==id)throw new Error('服务端返回的版本 ID 与请求不一致。');
+      state.selectedSource=record;showSourceDetail(record);
+      setStatus(byId('source-detail-status'),'已读取登记信息。运行接口和依赖状态以本条记录为准。','success');
+      setStatus(byId('run-form-status'),'已选择：'+sourceRecordName(record)+'。请核对参数和日期后提交。','success');
+      try{byId('custom-params').value=JSON.stringify(record.default_params||{},null,2);}catch(_error){byId('custom-params').value='{}';}
+      updateRunButton();
+    }catch(error){
+      if(request!==state.detailRequest)return;
+      state.selectedId='';state.selectedSource=null;showSourceDetail(null,'无法读取这条版本详情。');
+      setStatus(byId('source-detail-status'),errorText(error,'读取版本详情失败，请重新刷新版本库。'),'error');
+      setStatus(byId('run-form-status'),'所选版本详情读取失败，请刷新版本库后重试。','error');
+      document.querySelectorAll('.source-row').forEach(function(button){button.classList.remove('selected');});
+      updateRunButton();
+    }
+  }
+  function updateRunButton(){
+    var button=byId('run-btn');button.disabled=!state.selectedSource||state.submittingRun;
+  }
+  function utf8Length(text){return new TextEncoder().encode(text).length;}
+  async function sourceFileBase64(file){
+    var bytes=new Uint8Array(await file.arrayBuffer());var binary='';var chunk=0x8000;
+    for(var offset=0;offset<bytes.length;offset+=chunk)binary+=String.fromCharCode.apply(null,bytes.subarray(offset,Math.min(offset+chunk,bytes.length)));
+    return btoa(binary);
+  }
+  byId('source-form').addEventListener('submit',async function(event){
+    event.preventDefault();if(state.submittingSource)return;
+    var file=byId('source-file').files&&byId('source-file').files[0];
+    var name=byId('source-name').value.trim();var description=byId('source-description').value;
+    var params;var parentId='';
+    try{
+      if(!file)throw new Error('请先选择一个 Python 文件。');
+      if(!/\.py$/i.test(file.name))throw new Error('请选择扩展名为 .py 的 Python 文件。');
+      if(file.size>65536)throw new Error('源文件超过 64 KiB，请精简后再上传。');
+      if(!name||name.length>120||utf8Length(name)>256)throw new Error('版本名称不能为空，最多 120 个字符且 UTF-8 不超过 256 字节。');
+      if(utf8Length(description)>1000)throw new Error('说明文本超过 1000 字节。');
+      params=parseObject(byId('new-default-params').value,'默认参数');
+      if(byId('new-version').checked){if(!state.selectedSource)throw new Error('请先从版本库选择父版本，或取消“新版本”选项。');parentId=state.selectedSource.registration_id;}
+    }catch(error){setStatus(byId('source-form-status'),error.message,'error');return;}
+    state.submittingSource=true;byId('register-btn').disabled=true;setStatus(byId('source-form-status'),'正在上传并登记源码版本…','');
+    try{
+      var payload={name:name,description:description,default_params:params,source_base64:await sourceFileBase64(file)};
+      if(parentId)payload.parent_id=parentId;
+      var result=await api('/api/research/custom-sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      var created=result.record||result;var createdId=safeSourceId(created.registration_id);
+      if(!createdId)throw new Error('服务端已响应，但没有返回有效版本登记 ID。');
+      byId('source-form').reset();byId('new-default-params').value='{\n  \"fast\": 5,\n  \"slow\": 20\n}';
+      setStatus(byId('source-form-status'),'登记成功。源码不会自动运行；请选择版本并单独提交回放。','success');
+      await refreshSources(createdId);
+    }catch(error){setStatus(byId('source-form-status'),errorText(error,'上传或登记失败，请检查文件和服务状态。'),'error');}
+    finally{state.submittingSource=false;byId('register-btn').disabled=false;}
+  });
+  byId('refresh-sources').addEventListener('click',function(){refreshSources(state.selectedId||undefined);});
+
+  function numberField(id,label,min,max,integer){
+    var value=Number(byId(id).value);if(!Number.isFinite(value)||value<min||(max!==null&&value>max))throw new Error(label+'超出允许范围。');
+    if(integer&&!Number.isInteger(value))throw new Error(label+'必须是整数。');return value;
+  }
+  function validDateRange(){
+    var start=byId('start').value;var end=byId('end').value;
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(start)||!/^\d{4}-\d{2}-\d{2}$/.test(end))throw new Error('请填写有效的开始和结束日期。');
+    if(start<'2024-01-01'||start>'2025-12-31'||end<'2024-01-01'||end>'2025-12-31')throw new Error('当前只开放 2024–2025 年的历史回放日期。');
+    var first=Date.parse(start+'T00:00:00Z');var last=Date.parse(end+'T00:00:00Z');
+    if(!Number.isFinite(first)||!Number.isFinite(last)||last<first)throw new Error('结束日期须不早于开始日期。');
+    if((last-first)/86400000+1>31)throw new Error('单次回放最多 31 个自然日。');
+    return {start:start,end:end};
+  }
+  var STATUS={queued:'排队中',pending:'等待运行',running:'运行中',cancelling:'正在取消',interrupted:'中断',completed:'已完成',complete:'已完成',succeeded:'已完成',success:'已完成',failed:'失败',error:'失败',cancelled:'已取消',canceled:'已取消'};
+  var ACTIVE=['queued','pending','running','cancelling'];
+  var TERMINAL=['completed','complete','succeeded','success','failed','error','cancelled','canceled','interrupted'];
+  function renderRun(record,detail,runId){
+    byId('run-empty').classList.add('hidden');byId('run-box').classList.remove('hidden');
+    var rawStatus=String(record.status||'unknown').toLowerCase();var status=STATUS[rawStatus]||'状态待确认';
+    setText(byId('run-title'),String(record.label||'Python 策略历史回放')+' · '+runId);
+    var badge=byId('run-badge');badge.textContent=status;badge.className='status-badge'+(ACTIVE.indexOf(rawStatus)>=0?' status-running':TERMINAL.indexOf(rawStatus)>=0&&['completed','complete','succeeded','success'].indexOf(rawStatus)>=0?' status-complete':TERMINAL.indexOf(rawStatus)>=0?' status-failed':'');
+    var progress=detail.progress!==undefined?detail.progress:record.progress;
+    if(progress&&typeof progress==='object')progress=progress.percent!==undefined?progress.percent:progress.value;
+    var percent=Number(progress);if(Number.isFinite(percent)){percent=Math.max(0,Math.min(100,percent));byId('run-progress').style.width=percent+'%';setText(byId('run-progress-label'),'服务端进度：'+percent.toFixed(0)+'%');}
+    else{byId('run-progress').style.width='0%';setText(byId('run-progress-label'),'进度待服务端返回');}
+    var message=detail.error||record.error||detail.message||record.message||'';
+    setText(byId('run-message'),message?String(message).slice(0,500):'等待研究服务完成隔离回放并保存结果。');
+    var link=byId('report-link');link.href='/research#'+encodeURIComponent(runId);link.classList.remove('hidden');
+    var replayLink=byId('python-replay-link');replayLink.href='/python-replay?run_id='+encodeURIComponent(runId);replayLink.classList.toggle('hidden',rawStatus!=='completed');
+    if(TERMINAL.indexOf(rawStatus)>=0){clearTimeout(state.pollTimer);setStatus(byId('run-read-status'),'任务状态由研究服务返回；可打开已保存的回测报告。',rawStatus==='failed'||rawStatus==='error'?'error':'success');}
+  }
+  function unpackRun(body){
+    var detail=body.detail&&typeof body.detail==='object'?body.detail:{};
+    var record=detail.record||body.record||body;
+    return {record:record,detail:detail};
+  }
+  async function pollRun(runId,generation){
+    if(generation!==state.runGeneration)return;
+    clearTimeout(state.pollTimer);
+    try{
+      var body=await api('/api/research/runs/'+encodeURIComponent(runId));if(generation!==state.runGeneration)return;
+      var packed=unpackRun(body);renderRun(packed.record||{},packed.detail||{},runId);
+      var status=String(packed.record&&packed.record.status||'unknown').toLowerCase();
+      if(ACTIVE.indexOf(status)>=0)state.pollTimer=setTimeout(function(){pollRun(runId,generation);},1800);
+      else if(TERMINAL.indexOf(status)<0)setStatus(byId('run-read-status'),'服务端返回了未识别状态；请通过报告链接核对保存记录。','error');
+    }catch(error){
+      if(generation!==state.runGeneration)return;
+      setStatus(byId('run-read-status'),errorText(error,'读取任务状态失败；稍后可刷新报告。'),'error');
+      state.pollTimer=setTimeout(function(){pollRun(runId,generation);},4000);
+    }
+  }
+  function openRun(runId){
+    var id=safeRunId(runId);if(!id)return;
+    clearTimeout(state.pollTimer);state.runGeneration++;var generation=state.runGeneration;state.runId=id;
+    byId('run-empty').classList.add('hidden');byId('run-box').classList.remove('hidden');setText(byId('run-title'),'正在读取回放任务 · '+id);
+    setText(byId('run-badge'),'读取中');byId('run-badge').className='status-badge status-running';setText(byId('run-message'),'正在读取服务端保存的运行记录。');setStatus(byId('run-read-status'),'','');
+    byId('report-link').href='/research#'+encodeURIComponent(id);byId('report-link').classList.remove('hidden');
+    pollRun(id,generation);
+  }
+  byId('run-form').addEventListener('submit',async function(event){
+    event.preventDefault();if(state.submittingRun)return;
+    if(!state.selectedSource){setStatus(byId('run-form-status'),'请先从版本库选择一个 Python 策略版本。','error');return;}
+    var payload;
+    try{
+      var customParams=parseObject(byId('custom-params').value,'策略参数');
+      var range=validDateRange();var symbol=byId('symbol').value.trim().toUpperCase();
+      if(!/^(?:(?:000|001|002|003)\d{3}\.SZSE|(?:600|601|603|605)\d{3}\.SSE)$/.test(symbol))throw new Error('证券代码须为一只深市 000/001/002/003 或沪市 600/601/603/605 主板代码，并带 .SZSE 或 .SSE 后缀。');
+      var initialCash=numberField('initial-cash','初始资金',0.01,null,false);
+      var historyLimit=numberField('history-limit','策略可见历史上限',1,241,true);
+      var params={target_fraction:numberField('target-fraction','目标资金比例',0.01,1,false),max_turnover_participation:numberField('max-turnover','成交额参与比例',0.0001,0.1,false)};
+      payload={
+        strategy:'custom_python',backend:'isolated_python',source_id:state.selectedSource.registration_id,
+        custom_params:customParams,history_limit:historyLimit,params:params,symbol:symbol,
+        start:range.start,end:range.end,initial_cash:initialCash,
+        commission_rate:numberField('commission-rate','佣金费率',0,null,false),
+        min_commission:numberField('min-commission','最低佣金',0,null,false),
+        slippage_bps:numberField('slippage-bps','滑点',0,null,false),
+        label:byId('run-label').value.trim()
+      };
+      if(state.parentRunId)payload.parent_run_id=state.parentRunId;
+    }catch(error){setStatus(byId('run-form-status'),error.message,'error');return;}
+    state.submittingRun=true;byId('run-btn').disabled=true;setStatus(byId('run-form-status'),'正在提交明确请求的历史回放…','');
+    try{
+      var body=await api('/api/research/runs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      var record=body.record||body;var id=safeRunId(record.run_id);
+      if(!id)throw new Error('研究服务响应中没有有效的 RunStore 运行 ID。');
+      setStatus(byId('run-form-status'),'任务已保存到本机；正在读取实际运行状态。','success');
+      window.history.replaceState(null,'',window.location.pathname+'#'+id);openRun(id);
+    }catch(error){setStatus(byId('run-form-status'),errorText(error,'回放任务提交失败。请检查服务错误信息和预检状态。'),'error');}
+    finally{state.submittingRun=false;updateRunButton();}
+  });
+  async function initialize(){
+    await refreshSources();
+    var prior=safeRunId(new URLSearchParams(window.location.search).get('from_run'));
+    if(!prior)return;
+    try{
+      var body=await api('/api/research/runs/'+prior),record=body.record||body,config=record.config;
+      if(!config||config.strategy!=='custom_python'||!safeSourceId(config.source_id))throw new Error('该任务不是可复制的 Python 策略回放。');
+      await selectSource(config.source_id);
+      if(!state.selectedSource||state.selectedId!==config.source_id)throw new Error('原策略版本不可读取，未复制参数。');
+      byId('custom-params').value=JSON.stringify(config.custom_params||{},null,2);
+      ['symbol','start','end'].forEach(function(name){if(config[name]!==undefined)byId(name).value=String(config[name]);});
+      [['initial-cash','initial_cash'],['commission-rate','commission_rate'],['min-commission','min_commission'],['slippage-bps','slippage_bps'],['history-limit','history_limit']].forEach(function(pair){if(config[pair[1]]!==undefined)byId(pair[0]).value=String(config[pair[1]]);});
+      var risk=config.params||{};
+      if(risk.target_fraction!==undefined)byId('target-fraction').value=String(risk.target_fraction);
+      if(risk.max_turnover_participation!==undefined)byId('max-turnover').value=String(risk.max_turnover_participation);
+      state.parentRunId=prior;
+      setStatus(byId('run-form-status'),'已复制原任务参数并关联父实验；请核对后再点击提交，原报告保持不变。','success');
+    }catch(error){state.parentRunId='';setStatus(byId('run-form-status'),errorText(error,'复制原任务参数失败，请手动选择版本。'),'error');}
+  }
+  initialize();
+  var initialRun=safeRunId((window.location.hash||'').slice(1));if(initialRun)openRun(initialRun);
+})();
+</script>
+<script src="/api/research/runtime-controls.js" defer></script>
+</body>
+</html>
