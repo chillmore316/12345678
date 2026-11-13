@@ -17,12 +17,12 @@ _ID = re.compile(r"[a-f0-9]{32}\Z")
 _SHA = re.compile(r"[a-f0-9]{64}\Z")
 _LIMITS = {"receipt.json": 32 * 1024, "config.json": 128 * 1024,
            "data_manifest.json": 8 * 1024**2, "state.json": 128 * 1024**2,
-           "result.json": 64 * 1024**2}
-_ARTIFACTS = frozenset(_LIMITS) - {"receipt.json"}
+           "result.json": 64 * 1024**2, "source_snapshot.json": 8 * 1024**2}
+_ARTIFACTS = frozenset(_LIMITS) - {"receipt.json", "source_snapshot.json"}
 _CONFIG_FIELDS = frozenset({"symbols", "strategy", "start", "end", "interval",
     "initial_cash", "commission_rate", "min_commission", "slippage_bps",
     "params", "allocation_weights", "allocation_order"})
-_RECEIPT_FIELDS = frozenset({"run_id", "status", "created_at", "finished_at", "frames", "error"})
+_RECEIPT_FIELDS = frozenset({"run_id", "status", "created_at", "finished_at", "frames", "error", "schema_version", "code_version"})
 
 
 class PortfolioArtifactChanged(ValueError):
@@ -68,6 +68,9 @@ class PortfolioArchive:
             os.close(root_fd)
         try:
             receipt = _json(_read(directory_fd, "receipt.json"))
+            schema = receipt.get("schema_version", 1)
+            if type(schema) is not int or schema not in {1, 2}:
+                raise ValueError("组合回执版本不支持")
             if (receipt.get("run_id") != run_id or receipt.get("mode") != "RESEARCH_ONLY"
                     or receipt.get("paper_admission") is not False
                     or receipt.get("status") not in {"queued", "running", "completed", "failed", "interrupted", "timed_out", "cancelled"}):
@@ -76,6 +79,9 @@ class PortfolioArchive:
             config = _json(config_raw)
             public_config = {key: value for key, value in config.items() if key in _CONFIG_FIELDS}
             public_receipt = {key: value for key, value in receipt.items() if key in _RECEIPT_FIELDS}
+            public_receipt["source_snapshot_status"] = "not_checked" if schema == 2 else "unavailable"
+            if schema == 1:
+                public_receipt.pop("code_version", None)
             # Execution status is historical. Inventory does not read the large
             # report/state files and must never imply their hashes were checked.
             public_receipt["artifact_integrity"] = "not_checked"
@@ -83,7 +89,10 @@ class PortfolioArchive:
             if receipt["status"] != "completed":
                 return output
             hashes = receipt.get("artifact_sha256")
-            if (type(hashes) is not dict or set(hashes) != _ARTIFACTS
+            if schema == 2 and (type(receipt.get("code_version")) is not str or _SHA.fullmatch(receipt["code_version"]) is None):
+                raise PortfolioArtifactChanged("组合源码版本缺失或无效")
+            expected = _ARTIFACTS | {"source_snapshot.json"} if schema == 2 else _ARTIFACTS
+            if (type(hashes) is not dict or set(hashes) != expected
                     or any(type(value) is not str or _SHA.fullmatch(value) is None for value in hashes.values())):
                 raise PortfolioArtifactChanged("组合产物哈希清单缺失或不完整，请核查原运行目录")
             if hashlib.sha256(config_raw).hexdigest() != hashes["config.json"]:
@@ -91,7 +100,10 @@ class PortfolioArchive:
             if summary:
                 return output
             parsed = {}
-            for name in ("data_manifest.json", "state.json", "result.json"):
+            names = ["data_manifest.json", "state.json", "result.json"]
+            if schema == 2:
+                names.append("source_snapshot.json")
+            for name in names:
                 raw = _read(directory_fd, name)
                 if hashlib.sha256(raw).hexdigest() != hashes[name]:
                     raise PortfolioArtifactChanged("组合产物已变化，停止展示该报告")
@@ -102,6 +114,16 @@ class PortfolioArchive:
             result = parsed["result.json"]
             if result.get("mode") != "RESEARCH_ONLY" or result.get("paper_admission") is not False:
                 raise ValueError("组合结果模式无效")
+            if schema == 2:
+                from .portfolio_provenance import validate_snapshot
+                snapshot = parsed["source_snapshot.json"]
+                validate_snapshot(snapshot)
+                version = snapshot["source_version"]
+                provenance = result.get("provenance")
+                if (receipt.get("code_version") != version or type(provenance) is not dict
+                        or provenance.get("source_version") != version or provenance.get("runtime") != snapshot["runtime"]):
+                    raise PortfolioArtifactChanged("组合报告的执行版本与源码归档不一致")
+                public_receipt["source_snapshot_status"] = "archived_and_verified"
             public_receipt["artifact_integrity"] = "verified"
             output.update(result=result, data_manifest=parsed["data_manifest.json"])
             return output

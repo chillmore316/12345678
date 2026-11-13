@@ -177,6 +177,18 @@ vm.runInNewContext(scripts[0][1], {document, window, fetch: fakeFetch, Number, S
   assert.ok(ids['equity-chart'].children.some(node => node.tagName === 'TEXT' && node.textContent === '2024-01-02 09:31:00'), 'x-axis uses a real timestamp label');
   assert.doesNotMatch(ids['equity-chart'].textContent, /NaN|Infinity|undefined/);
 
+  assert.match(ids['config-version'].textContent,/旧记录未归档源码/);
+  const versionId='2'.repeat(32),versioned=detail(versionId);
+  Object.assign(versioned.receipt,{schema_version:2,source_snapshot_status:'archived_and_verified',code_version:'f'.repeat(64)});
+  versioned.result.provenance={source_version:'f'.repeat(64)};
+  payloadById.set(versionId,versioned);
+  await app.openRun(versionId,false,false);
+  assert.match(ids['config-version'].textContent,/源码已归档/);
+  assert.ok(ids['config-version'].textContent.includes('f'.repeat(64)));
+  versioned.result.provenance.source_version='0'.repeat(64);
+  await app.openRun(versionId,false,true);
+  assert.match(ids['config-version'].textContent,/归档版本不可确认/);
+
   const malicious = detail(idB, {config: config([unsafe, '000002.SZSE'])});
   malicious.result.positions = {[unsafe]: {quantity: 1, avg_cost: 2, available_to_sell: 1, market_value: 2, lots: []}, '000002.SZSE': {quantity: 0, avg_cost: 0, available_to_sell: 0, market_value: 0, lots: []}};
   malicious.result.trades = [{datetime: '2024-01-05 09:31:00', symbol: unsafe, side: 'buy', qty: 1, price: 2}];

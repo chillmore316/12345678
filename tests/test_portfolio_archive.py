@@ -69,6 +69,35 @@ class PortfolioArchiveTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.archive.get(RUN)
 
+    def test_versioned_snapshot_verified_without_exposing_or_requiring_current_sources(self):
+        from research_center.portfolio_provenance import SOURCE_FILES, snapshot_sources
+        source_root = Path(self.temp.name) / "synthetic-code"
+        for name in SOURCE_FILES:
+            path = source_root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("# PRIVATE-SOURCE-SNAPSHOT-SENTINEL\n")
+        snapshot = snapshot_sources(source_root)
+        directory, receipt = fixture(self.root)
+        raw = json.dumps(snapshot).encode()
+        (directory / "source_snapshot.json").write_bytes(raw)
+        receipt.update(schema_version=2, code_version=snapshot["source_version"])
+        receipt["artifact_sha256"]["source_snapshot.json"] = hashlib.sha256(raw).hexdigest()
+        result = json.loads((directory / "result.json").read_text())
+        result["provenance"] = {"source_version": snapshot["source_version"], "runtime": snapshot["runtime"]}
+        raw = json.dumps(result).encode()
+        (directory / "result.json").write_bytes(raw)
+        receipt["artifact_sha256"]["result.json"] = hashlib.sha256(raw).hexdigest()
+        (directory / "receipt.json").write_text(json.dumps(receipt))
+        (source_root / SOURCE_FILES[0]).write_text("# newer current source\n")
+        value = self.archive.get(RUN)
+        self.assertEqual(value["receipt"]["source_snapshot_status"], "archived_and_verified")
+        self.assertEqual(value["receipt"]["code_version"], snapshot["source_version"])
+        self.assertNotIn("PRIVATE-SOURCE-SNAPSHOT-SENTINEL", json.dumps(value))
+        receipt["code_version"] = "0" * 64
+        (directory / "receipt.json").write_text(json.dumps(receipt))
+        with self.assertRaises(PortfolioArtifactChanged):
+            self.archive.get(RUN)
+
     def test_running_and_failed_records_do_not_read_partial_result(self):
         directory, receipt = fixture(self.root)
         for status in ("running", "failed"):

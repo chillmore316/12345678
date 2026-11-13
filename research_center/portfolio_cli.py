@@ -59,12 +59,18 @@ def main(argv=None):
         parser.error("组合输出必须使用独立的研究目录")
     directory = root / run_id
     directory.mkdir(parents=True, mode=0o700)
-    receipt = dict(run_id=run_id, status="running", created_at=datetime.now(timezone.utc).isoformat(),
+    receipt = dict(schema_version=2, run_id=run_id, status="running", created_at=datetime.now(timezone.utc).isoformat(),
                    mode="RESEARCH_ONLY", paper_admission=False, artifact_directory=str(directory))
     write_json(directory / "receipt.json", receipt)
     print(json.dumps(receipt, ensure_ascii=False), flush=True)
     try:
         write_json(directory / "config.json", config)
+        from .portfolio_provenance import snapshot_sources, verify_sources
+        snapshot = snapshot_sources(ROOT)
+        write_json(directory / "source_snapshot.json", snapshot)
+        receipt["code_version"] = snapshot["source_version"]
+        write_json(directory / "receipt.json", receipt)
+        verify_sources(ROOT, snapshot)
         single_configs = config["symbol_configs"]
         frames, manifest = load_aligned_frames(single_configs)
         state = advance(config, initial_state(config), frames, final=True)
@@ -80,6 +86,12 @@ def main(argv=None):
         result["data_readiness"] = {
             "status": "mismatch" if any(item["status"] == "mismatch" for item in readiness.values()) else "unverified",
             "by_symbol": readiness, "paper_admission": False,
+        }
+        verify_sources(ROOT, snapshot)
+        result["provenance"] = {
+            "source_version": snapshot["source_version"], "runtime": snapshot["runtime"],
+            "source_snapshot": "source_snapshot.json",
+            "scope": "current_sources_match_archived_snapshot_before_and_after_execution",
         }
         write_json(directory / "data_manifest.json", manifest)
         write_json(directory / "state.json", state)
