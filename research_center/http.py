@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from .store import ROOT, RunStore, ANALYTIC_EXPORTS
 
 
-def respond(handler, status, data, content_type='application/json; charset=utf-8'):
+def respond(handler, status, data, content_type='application/json; charset=utf-8', *, headers=None):
     if not isinstance(data, bytes):
         data = json.dumps(data, ensure_ascii=False, allow_nan=False).encode()
     handler.send_response(status)
@@ -15,8 +15,11 @@ def respond(handler, status, data, content_type='application/json; charset=utf-8
     handler.send_header('Content-Length', str(len(data)))
     handler.send_header('Cache-Control', 'no-store')
     handler.send_header('X-Content-Type-Options', 'nosniff')
+    for name, value in (headers or {}).items():
+        handler.send_header(name, value)
     handler.end_headers()
-    handler.wfile.write(data)
+    if getattr(handler, 'command', 'GET') != 'HEAD':
+        handler.wfile.write(data)
 
 
 def replay_store(store, namespace):
@@ -29,7 +32,7 @@ def replay_store(store, namespace):
 
 def handle(handler, store, method='GET', *, verification_only=False):
     path = urlparse(handler.path).path
-    if path not in {'/research', '/research/', '/replay', '/replay/', '/data-check', '/data-check/', '/source-check', '/source-check/', '/python-strategy', '/python-strategy/', '/python-replay', '/python-replay/', '/research-workflows', '/research-workflows/'} and not path.startswith('/api/research/'):
+    if path not in {'/research', '/research/', '/portfolio', '/portfolio/', '/replay', '/replay/', '/data-check', '/data-check/', '/source-check', '/source-check/', '/python-strategy', '/python-strategy/', '/python-replay', '/python-replay/', '/research-workflows', '/research-workflows/'} and not path.startswith('/api/research/'):
         return False
     # Loopback binding alone does not stop browser DNS rebinding. Protect
     # read paths as well as writes: records contain local research details.
@@ -42,6 +45,22 @@ def handle(handler, store, method='GET', *, verification_only=False):
         respond(handler, 403, {'error': '备份验证模式只允许读取，不能提交任务或修改演练账户。'})
         return True
     try:
+        if method == 'GET' and path in {'/portfolio', '/portfolio/'}:
+            respond(handler, 200, (ROOT / 'live_paper_compare/static/portfolio.html').read_bytes(), 'text/html; charset=utf-8')
+            return True
+        if path == '/api/research/portfolios' or path.startswith('/api/research/portfolios/'):
+            from .portfolio_archive import PortfolioArchive, archive_root
+            parts = path.strip('/').split('/')
+            archive = PortfolioArchive(archive_root(store))
+            if method != 'GET':
+                respond(handler, 405, {'error': '组合归档接口只允许读取历史记录'}, headers={'Allow': 'GET'})
+            elif len(parts) == 3:
+                respond(handler, 200, archive.list())
+            elif len(parts) == 4:
+                respond(handler, 200, archive.get(parts[3]))
+            else:
+                raise FileNotFoundError('unknown portfolio route')
+            return True
         if method == 'GET' and path in {'/research-workflows', '/research-workflows/'}:
             page = ROOT / 'live_paper_compare/static/research_workflows.html'
             respond(handler, 200, page.read_bytes(), 'text/html; charset=utf-8')
@@ -286,7 +305,7 @@ def handle(handler, store, method='GET', *, verification_only=False):
             # never guest exception text or source. Clients can distinguish a
             # confirmed rollback from an unknown response loss.
             error['reason'] = str(exc)
-        respond(handler, 409 if kind in {'RevisionConflict', 'SourceCodeChanged', 'PythonReplayRevisionConflict', 'PythonReplaySourceChanged'} else 400, error)
+        respond(handler, 409 if kind in {'RevisionConflict', 'SourceCodeChanged', 'PythonReplayRevisionConflict', 'PythonReplaySourceChanged', 'PortfolioArtifactChanged'} else 400, error)
     except Exception:
         respond(handler, 500, {'error': '研究服务异常，请检查本地日志'})
     return True
@@ -307,6 +326,17 @@ def make_server(store, port=8060, *, verification_only=False):
         def do_POST(self):
             if not handle(self, store, 'POST', verification_only=verification_only):
                 respond(self, 404, {'error': 'not found'})
+        def _unsupported_method(self):
+            path = urlparse(self.path).path
+            if path == '/api/research/portfolios' or path.startswith('/api/research/portfolios/'):
+                handle(self, store, self.command, verification_only=verification_only)
+            else:
+                self.send_error(501, 'Unsupported method')
+        do_PUT = _unsupported_method
+        do_DELETE = _unsupported_method
+        do_PATCH = _unsupported_method
+        do_OPTIONS = _unsupported_method
+        do_HEAD = _unsupported_method
     return ThreadingHTTPServer(('127.0.0.1', port), Handler)
 
 
