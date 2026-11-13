@@ -20,3 +20,5 @@ node --test tests/*.cjs
 ```
 
 研究工作台保持 `RESEARCH_ONLY` 和 `paper_admission=false`。历史演练使用本机回放，不连接券商。
+
+开发中的共享资金组合历史研究和只读报告见[组合研究说明](docs/PORTFOLIO_RESEARCH.md)。网页任务提交与完整组合演练账户仍待实现。
