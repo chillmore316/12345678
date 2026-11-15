@@ -4,22 +4,60 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>历史组合报告 · 本地研究</title>
+  <title>组合研究工作台 · 本地研究</title>
   <style>
     :root{color-scheme:light;--bg:#f4f7fb;--surface:#fff;--soft:#f8fafc;--ink:#172536;--muted:#627286;--line:#dce4ed;--blue:#2463eb;--blue-soft:#eaf1ff;--green:#087a53;--red:#a8323e;--amber:#805900;--amber-bg:#fff6dc;--shadow:0 8px 24px rgba(30,48,72,.06)}
     *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}button{font:inherit;cursor:pointer}main{max-width:1440px;margin:0 auto;padding:24px}.topbar{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:18px}.eyebrow{margin:0 0 4px;color:var(--blue);font-size:12px;font-weight:700;letter-spacing:.05em}h1{margin:0 0 5px;font-size:27px;line-height:1.25}h2{margin:0;font-size:17px}h3{margin:0 0 8px;font-size:14px}.subtitle,.muted,.caption{color:var(--muted)}.subtitle{margin:0}.top-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.pill,.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:36px;padding:7px 11px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);text-decoration:none;font-weight:650}.pill{min-height:31px;border-radius:99px;background:var(--blue-soft);border-color:#d5e2ff;color:#1750bd;white-space:nowrap}.btn:hover{background:var(--soft);border-color:#bdcbd9}.notice{padding:13px 16px;margin-bottom:16px;border:1px solid #efd28b;border-left:4px solid #d99413;border-radius:10px;background:var(--amber-bg);color:#5e4715}.notice strong{color:#563a00}.layout{display:grid;grid-template-columns:minmax(290px,355px) minmax(0,1fr);gap:16px;align-items:start}.panel{min-width:0;padding:17px;border:1px solid var(--line);border-radius:12px;background:var(--surface);box-shadow:var(--shadow)}.stack{display:grid;gap:16px}.panel-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:12px}.caption{font-size:12px}.panel-head .caption{margin-top:3px}.status{min-height:22px;margin:8px 0;color:var(--muted);font-size:13px}.error{color:var(--red)}.ok{color:var(--green)}.run-list{display:grid;gap:8px;max-height:70vh;overflow:auto}.run-item{display:block;width:100%;padding:10px 11px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink);text-align:left}.run-item:hover{border-color:#9bb5e8;background:#fbfdff}.run-item.selected{border-color:var(--blue);box-shadow:0 0 0 2px rgba(36,99,235,.11);background:#f9fbff}.run-title{font-weight:700;overflow-wrap:anywhere}.run-meta{margin-top:4px;color:var(--muted);font-size:12px}.badge{display:inline-flex;align-items:center;padding:2px 8px;border:1px solid var(--line);border-radius:99px;background:#f5f7fa;color:#58687b;font-size:11px;white-space:nowrap}.badge-completed{border-color:#bfe5d3;background:#e5f5ee;color:var(--green)}.badge-failed{border-color:#f1c4c8;background:#fff0f0;color:var(--red)}.badge-running{border-color:#c5d7fb;background:#edf3ff;color:#164fbd}.empty{padding:17px 12px;border:1px dashed #cbd6e2;border-radius:9px;color:var(--muted);text-align:center}.detail-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.detail-head h2{overflow-wrap:anywhere}.detail-links{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.detail-links a{color:#164fbd;text-decoration:none}.detail-links a:hover{text-decoration:underline}.config-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:13px 0}.config-item{min-width:0;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--soft)}.config-label{color:var(--muted);font-size:11px}.config-value{margin-top:2px;font-weight:650;overflow-wrap:anywhere}.metrics{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin:13px 0}.metric{min-width:0;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--soft)}.metric-label{color:var(--muted);font-size:11px}.metric-value{margin-top:3px;font-size:17px;font-weight:750;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.readiness{padding:10px 12px;margin:12px 0;border:1px solid #efd28b;border-radius:8px;background:var(--amber-bg);color:#5e4715}.readiness strong{color:#563a00}.chart-card{padding:12px;border:1px solid var(--line);border-radius:10px}.chart-sub{margin:3px 0 8px;color:var(--muted);font-size:11px}.legend{display:flex;gap:15px;flex-wrap:wrap;margin:4px 0 5px}.legend span{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:12px}.swatch{display:inline-block;width:10px;height:10px;border-radius:50%}.chart{display:block;width:100%;height:270px}.chart-empty{min-height:170px;display:grid;place-items:center;border-radius:8px;background:var(--soft);color:var(--muted);text-align:center;padding:14px}.chart .grid-line{stroke:#e8edf3;stroke-width:1}.chart .axis-line{stroke:#aab8c7;stroke-width:1}.chart .axis-label{fill:#627286;font-size:11px}.chart .series-line{stroke-width:2;fill:none}.table-wrap{max-height:330px;overflow:auto;border:1px solid var(--line);border-radius:8px}.data-table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap}.data-table th,.data-table td{padding:8px 9px;border-bottom:1px solid #e8edf3;text-align:left}.data-table th{position:sticky;top:0;z-index:1;background:#f6f8fb;color:#52647a;font-weight:650}.data-table tr:last-child td{border-bottom:0}.empty-cell{text-align:center!important;color:var(--muted);padding:18px!important}.table-caption{margin:5px 0 8px;color:var(--muted);font-size:11px}.section{margin-top:16px}.hidden{display:none!important}.foot{margin:17px 2px 3px;color:var(--muted);font-size:12px}a{color:#164fbd}
-    @media(max-width:1000px){.metrics{grid-template-columns:repeat(3,minmax(0,1fr))}.config-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    .submit-panel{margin-bottom:16px}.submit-grid{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:10px}.submit-grid label{display:grid;gap:4px;font-size:12px;color:var(--muted)}.submit-grid input,.submit-grid select{width:100%;min-width:0;padding:8px;border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--ink);font:inherit}.submit-grid .wide{grid-column:span 2}.submit-help{margin:10px 0;color:var(--muted);font-size:12px}.submit-help a{white-space:nowrap}.submit-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.submit-button{min-height:36px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);font-weight:650}.submit-button.primary{background:var(--blue);border-color:var(--blue);color:#fff}.submit-button:disabled{cursor:default;opacity:.55}.submit-status{min-height:22px;margin:10px 0 0;color:var(--muted)}.submit-preview,.submit-job{padding:11px 12px;margin-top:12px;border:1px solid var(--line);border-radius:9px;background:var(--soft)}.submit-preview p,.submit-job p{margin:4px 0}.submit-cases{display:grid;gap:5px;margin:7px 0 0;padding-left:20px;overflow-wrap:anywhere}.submit-job-links{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.submit-job-links a{padding:6px 9px;border:1px solid var(--line);border-radius:7px;background:#fff;text-decoration:none}.submit-params{grid-column:1/-1;display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:10px;padding:10px;border:1px solid var(--line);border-radius:8px}.submit-params legend{padding:0 5px;color:var(--muted);font-size:12px}.submit-params label{display:grid;gap:4px;color:var(--muted);font-size:12px}.submit-params input{width:100%;padding:8px;border:1px solid var(--line);border-radius:7px;font:inherit}
+    @media(max-width:1000px){.metrics{grid-template-columns:repeat(3,minmax(0,1fr))}.config-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.submit-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.submit-params{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @media(max-width:760px){main{padding:14px}.topbar{display:block}.top-actions{margin-top:11px}.layout{grid-template-columns:1fr}.run-list{max-height:300px}.detail-head{display:block}.detail-links{justify-content:flex-start;margin-top:8px}.chart{height:245px}}
-    @media(max-width:450px){h1{font-size:23px}.panel{padding:13px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.metric-value{font-size:15px}.config-grid{grid-template-columns:1fr 1fr}}
+    @media(max-width:450px){h1{font-size:23px}.panel{padding:13px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.metric-value{font-size:15px}.config-grid{grid-template-columns:1fr 1fr}.submit-grid,.submit-params{grid-template-columns:1fr}.submit-grid .wide{grid-column:auto}}
   </style>
 </head>
 <body>
 <main>
   <header class="topbar">
-    <div><p class="eyebrow">本地量化研究工具</p><h1>历史组合报告</h1><p class="subtitle">只读查看已保存的多标的历史回放、共享资金权益、持仓与成交。</p></div>
+    <div><p class="eyebrow">本地量化研究工具</p><h1>组合研究工作台</h1><p class="subtitle">预检并提交本地历史组合研究，或查看已保存的共享资金回放报告。</p></div>
     <div class="top-actions"><span class="pill">RESEARCH_ONLY · 历史组合</span><a class="btn" href="/research">返回单股工作台</a><button class="btn" id="refresh-btn" type="button">刷新历史</button></div>
   </header>
-  <section class="notice" aria-label="研究边界"><strong>研究范围：</strong>本页只展示历史组合记录。数据与价格尚未认证，展示结果不构成模拟盘或实盘准入；paper_admission=false。可通过分享链接重开已保存报告。</section>
+  <section class="notice" aria-label="研究边界"><strong>研究范围：</strong>仅进行本机 RESEARCH_ONLY 历史研究，不连接账户；数据与价格尚未认证，结果不构成模拟盘或实盘准入，paper_admission=false。预检只检查配置，确认后才会创建组合任务。</section>
+  <section class="panel submit-panel" aria-labelledby="submit-title">
+    <div class="panel-head"><div><h2 id="submit-title">提交组合研究</h2><div class="caption">只支持主板 2–4 个标的、1 分钟数据与 2024–2025 年区间；单次最多 31 个自然日。</div></div><span class="badge">RESEARCH_ONLY</span></div>
+    <form id="portfolio-submit-form">
+      <div class="submit-grid">
+        <label class="wide" for="portfolio-symbols">证券代码，按资金分配顺序（逗号分隔）<input id="portfolio-symbols" name="symbols" type="text" maxlength="80" value="000001.SZSE,000002.SZSE" autocomplete="off" required></label>
+        <label>开始日期<input id="portfolio-start" name="start" type="date" min="2024-01-01" max="2025-12-31" value="2024-01-02" required></label>
+        <label>结束日期<input id="portfolio-end" name="end" type="date" min="2024-01-01" max="2025-12-31" value="2024-01-05" required></label>
+        <label>策略<select id="portfolio-strategy" name="strategy"><option value="buy_hold">买入持有</option><option value="sma_cross">双均线</option></select></label>
+        <label>共享初始资金（元）<input id="portfolio-cash" name="initial_cash" type="number" min="0.01" step="0.01" value="100000" required></label>
+        <label>佣金费率<input id="portfolio-commission" name="commission_rate" type="number" min="0" step="any" value="0.00025" required></label>
+        <label>最低佣金（元）<input id="portfolio-min-commission" name="min_commission" type="number" min="0" step="any" value="5" required></label>
+        <label>滑点（基点）<input id="portfolio-slippage" name="slippage_bps" type="number" min="0" step="any" value="5" required></label>
+        <fieldset class="submit-params"><legend>研究参数（不自动择优、不读取冻结留出年份）</legend>
+          <label>目标资金比例<input id="portfolio-target-fraction" type="number" min="0.0001" max="1" step="any" value="0.5" required></label>
+          <label>成交额参与上限<input id="portfolio-participation" type="number" min="0.0001" max="0.1" step="any" value="0.01" required></label>
+          <label>快线周期<input id="portfolio-fast" type="number" min="1" max="240" step="1" value="5" required></label>
+          <label>慢线周期<input id="portfolio-slow" type="number" min="2" max="241" step="1" value="20" required></label>
+        </fieldset>
+      </div>
+      <p class="submit-help">现金不足时按上方证券顺序分配。使用本机既有主板分钟库；数据源尚未认证。可先查看<a href="/data-check">数据检查</a>。以预检结果为准。</p>
+      <div class="submit-actions">
+        <button class="submit-button" id="portfolio-preview-button" type="submit">预检方案</button>
+        <button class="submit-button primary" id="portfolio-confirm-button" type="button" disabled>确认并提交</button>
+        <button class="submit-button" id="portfolio-retry-button" type="button" hidden>重试原请求</button>
+        <button class="submit-button" id="portfolio-find-button" type="button" hidden>查找已提交任务</button>
+      </div>
+    </form>
+    <p class="submit-status" id="portfolio-submit-status" role="status" aria-live="polite">请填写参数并预检。预检不会读取行情或启动任务。</p>
+    <section class="submit-preview" id="portfolio-preview-panel" hidden aria-label="预检摘要">
+      <h3>预检摘要</h3><p id="portfolio-preview-summary"></p><ul class="submit-cases" id="portfolio-preview-cases"></ul>
+    </section>
+    <section class="submit-job" id="portfolio-job-panel" hidden aria-label="组合任务状态">
+      <h3>任务状态</h3><p id="portfolio-job-status" role="status" aria-live="polite"></p>
+      <div class="submit-actions"><button class="submit-button" id="portfolio-refresh-job" type="button">刷新状态</button><button class="submit-button" id="portfolio-cancel-job" type="button" hidden>请求取消</button></div>
+      <ul class="submit-cases" id="portfolio-job-cases"></ul>
+    </section>
+  </section>
   <div class="layout">
     <aside class="panel">
       <div class="panel-head"><div><h2>历史组合</h2><div class="caption">列表最多显示 100 条；服务扫描范围受限时，历史记录可能不完整。</div></div></div>
@@ -58,8 +96,9 @@
       </section>
     </div>
   </div>
-  <p class="foot">报告数据来自本地历史组合 API；本页不提交任务、不连接账户，也不把历史回放标记为数据认证或交易准入。</p>
+  <p class="foot">报告数据来自本地历史组合 API；提交的任务仍属于历史研究，不连接账户，不代表数据认证或交易准入。</p>
 </main>
+<script src="/api/research/portfolio-submit.js" defer></script>
 <script>
 (function(){
   'use strict';

@@ -1,11 +1,13 @@
-/* Offline synthetic DOM/API coverage for the read-only portfolio report page. */
+/* Offline synthetic DOM/API coverage for the portfolio report page. */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 
 const html = fs.readFileSync('live_paper_compare/static/portfolio.html', 'utf8');
 assert.match(html, /<html lang="zh-CN">/);
-assert.doesNotMatch(html, /<script[^>]+src=|(?:src|href)=["']https?:/i, 'page must not load remote resources');
+assert.doesNotMatch(html, /(?:src|href)=["']https?:/i, 'page must not load remote resources');
+assert.deepEqual([...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map(match => match[1]),
+  ['/api/research/portfolio-submit.js'], 'page may load only the same-origin submission script');
 assert.match(html, /href="\/research"/, 'page links back to the single-stock workbench');
 assert.doesNotMatch(html, /method\s*:\s*["']POST|\.innerHTML\s*=/i, 'page must not submit or insert HTML strings');
 const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];

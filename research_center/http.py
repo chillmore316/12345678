@@ -48,6 +48,9 @@ def handle(handler, store, method='GET', *, verification_only=False):
         if method == 'GET' and path in {'/portfolio', '/portfolio/'}:
             respond(handler, 200, (ROOT / 'live_paper_compare/static/portfolio.html').read_bytes(), 'text/html; charset=utf-8')
             return True
+        if method == 'GET' and path == '/api/research/portfolio-submit.js':
+            respond(handler, 200, (ROOT / 'live_paper_compare/static/portfolio_submit.js').read_bytes(), 'text/javascript; charset=utf-8')
+            return True
         if path == '/api/research/portfolios' or path.startswith('/api/research/portfolios/'):
             from .portfolio_archive import PortfolioArchive, archive_root
             parts = path.strip('/').split('/')
@@ -130,6 +133,17 @@ def handle(handler, store, method='GET', *, verification_only=False):
                 respond(handler, 200, workflows.list())
             elif method == 'GET' and len(parts) == 4 and parts[3] != 'preview':
                 respond(handler, 200, workflows.get(parts[3]))
+            elif method == 'POST' and len(parts) == 5 and parts[4] == 'cancel':
+                origin = handler.headers.get('Origin')
+                if origin and origin != 'http://' + host:
+                    respond(handler, 403, {'error': '仅允许本机同源研究请求'})
+                    return True
+                from .intake import _parse_json
+                length = int(handler.headers.get('Content-Length', '0'))
+                if (handler.headers.get('Content-Type', '').split(';')[0] != 'application/json'
+                        or not 0 < length <= 64 or _parse_json(handler.rfile.read(length), '取消请求') != {}):
+                    raise ValueError('取消任务只接受空 JSON 对象')
+                respond(handler, 200, workflows.request_cancel(parts[3]))
             elif method == 'POST' and parts[3:] in ([], ['preview']):
                 origin = handler.headers.get('Origin')
                 if origin and origin != 'http://' + host:
@@ -149,7 +163,8 @@ def handle(handler, store, method='GET', *, verification_only=False):
                 else:
                     respond(handler, 202, workflows.submit(config['kind'], config['spec'], config['request_id']))
             else:
-                respond(handler, 405, {'error': '此研究实验接口不支持该操作'})
+                allowed = 'POST' if parts[3:] == ['preview'] or (len(parts) == 5 and parts[4] == 'cancel') else 'GET' if len(parts) == 4 else 'GET, POST'
+                respond(handler, 405, {'error': '此研究实验接口不支持该操作'}, headers={'Allow': allowed})
             return True
         if parts[:3] == ['api', 'research', 'custom-sources']:
             from .custom_source_store import CustomSourceStore
@@ -305,7 +320,7 @@ def handle(handler, store, method='GET', *, verification_only=False):
             # never guest exception text or source. Clients can distinguish a
             # confirmed rollback from an unknown response loss.
             error['reason'] = str(exc)
-        respond(handler, 409 if kind in {'RevisionConflict', 'SourceCodeChanged', 'PythonReplayRevisionConflict', 'PythonReplaySourceChanged', 'PortfolioArtifactChanged'} else 400, error)
+        respond(handler, 409 if kind in {'RevisionConflict', 'SourceCodeChanged', 'PythonReplayRevisionConflict', 'PythonReplaySourceChanged', 'PortfolioArtifactChanged', 'PortfolioSourceChanged'} else 400, error)
     except Exception:
         respond(handler, 500, {'error': '研究服务异常，请检查本地日志'})
     return True
@@ -328,7 +343,8 @@ def make_server(store, port=8060, *, verification_only=False):
                 respond(self, 404, {'error': 'not found'})
         def _unsupported_method(self):
             path = urlparse(self.path).path
-            if path == '/api/research/portfolios' or path.startswith('/api/research/portfolios/'):
+            if (path == '/api/research/portfolios' or path.startswith('/api/research/portfolios/')
+                    or path == '/api/research/workflows' or path.startswith('/api/research/workflows/')):
                 handle(self, store, self.command, verification_only=verification_only)
             else:
                 self.send_error(501, 'Unsupported method')

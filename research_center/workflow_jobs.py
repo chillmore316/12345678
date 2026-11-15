@@ -19,13 +19,15 @@ from pathlib import Path
 import re
 import signal
 import sqlite3
+import stat
 import subprocess
 import sys
+import time
 import uuid
 from typing import Any, Iterator
 
 
-_KINDS = frozenset({"batch", "rolling", "symbols"})
+_KINDS = frozenset({"batch", "rolling", "symbols", "portfolio"})
 _ACTIVE = frozenset({"queued", "running"})
 _TERMINAL = frozenset({"completed", "failed", "timed_out", "interrupted", "cancelled"})
 _MAX_SPEC_BYTES = 64 * 1024
@@ -97,7 +99,7 @@ def _job_id(value: Any) -> str:
 
 def _plan_for(root: Path, kind: str, spec: dict[str, Any]) -> dict[str, Any]:
     if type(kind) is not str or kind not in _KINDS:
-        raise ValueError("kind must be batch, rolling or symbols")
+        raise ValueError("kind must be batch, rolling, symbols or portfolio")
     if type(spec) is not dict:
         raise ValueError("spec must be a JSON object")
     _require_json_value(spec)
@@ -109,10 +111,14 @@ def _plan_for(root: Path, kind: str, spec: dict[str, Any]) -> dict[str, Any]:
         from .rolling import plan_rolling
 
         plan = plan_rolling(_RootOnlyStore(root), deepcopy(spec))
-    else:
+    elif kind == "symbols":
         from .symbol_comparison import plan_symbols
 
         plan = plan_symbols(_RootOnlyStore(root), deepcopy(spec))
+    else:
+        from .portfolio_workflow import plan_portfolio
+
+        plan = plan_portfolio(_RootOnlyStore(root), deepcopy(spec))
     # Keep the public result and later durable record within strict JSON bounds.
     encoded = _canonical(plan).encode("utf-8")
     if len(encoded) > _MAX_SPEC_BYTES * 8:
@@ -214,7 +220,7 @@ class WorkflowJobs:
     def submit(self, kind: str, spec: dict[str, Any], request_id: str) -> dict[str, Any]:
         request_id = _request_id(request_id)
         if type(kind) is not str or kind not in _KINDS:
-            raise ValueError("kind must be batch, rolling or symbols")
+            raise ValueError("kind must be batch, rolling, symbols or portfolio")
         if type(spec) is not dict:
             raise ValueError("spec must be a JSON object")
         _require_json_value(spec)
@@ -255,6 +261,8 @@ class WorkflowJobs:
             "last_event": None,
             "error": None,
         }
+        if kind == "portfolio":
+            record.update(report_url="/portfolio#" + job_id, cancel_requested=False)
 
         # Root flock serializes idempotency, active-job admission, and the
         # short Popen/pid-recording window across HTTP and worker processes.
@@ -351,6 +359,44 @@ class WorkflowJobs:
                     for record in (self._reconcile_record_locked(row) for row in records)]
             return {"jobs": jobs}
 
+    def cancel_path(self, job_id: str) -> Path:
+        return self.root / ".workflow-cancel" / _job_id(job_id)
+
+    def request_cancel(self, job_id: str) -> dict[str, Any]:
+        """Request portfolio cancellation; the owning supervisor confirms it."""
+        job_id = _job_id(job_id)
+        with self._root_lock(create=False):
+            record = self._find_job(job_id)
+            if record is None:
+                raise FileNotFoundError("workflow job not found")
+            if record.get("kind") != "portfolio":
+                raise ValueError("此取消入口仅用于共享资金组合任务")
+            record = self._reconcile_record_locked(record)
+            if record.get("status") not in _ACTIVE:
+                return deepcopy(record)
+            folder = self.cancel_path(job_id).parent
+            folder.mkdir(mode=0o700, exist_ok=True)
+            directory_fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                try:
+                    fd = os.open(job_id, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory_fd)
+                except FileExistsError:
+                    fd = os.open(job_id, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
+                    with os.fdopen(fd, "rb") as stream:
+                        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode) or stream.read(64) != (job_id + "\n").encode():
+                            raise ValueError("取消记录与任务不一致")
+                else:
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write((job_id + "\n").encode())
+                        stream.flush()
+                        os.fsync(stream.fileno())
+            finally:
+                os.close(directory_fd)
+            record["cancel_requested"] = True
+            record.setdefault("cancel_requested_at", _utc_now())
+            self._save_record(record)
+            return deepcopy(record)
+
     @contextmanager
     def _root_lock(self, *, create: bool) -> Iterator[None]:
         if create:
@@ -444,16 +490,26 @@ class WorkflowJobs:
         pid = record.get("pid")
         if type(pid) is int and pid > 0 and _worker_is_alive(pid, record["job_id"], self.root) is not False:
             return record
+        if record.get("kind") == "portfolio":
+            if _portfolio_execution_is_alive(self.root, record["job_id"]) is not False:
+                return record
+            recovered = _recover_portfolio_completion(self.root, record)
+            if recovered is not None:
+                self._save_record(recovered)
+                return recovered
+            _interrupt_portfolio_archive(self.root, record["job_id"])
         record = deepcopy(record)
         record.update(
             status="interrupted",
             finished_at=_utc_now(),
-            error="no active worker for this store and job; workflow was not re-admitted",
+            error=("此研究目录没有匹配的组合任务进程；记录保留，未重新提交" if record.get("kind") == "portfolio"
+                   else "no active worker for this store and job; workflow was not re-admitted"),
         )
         receipt = record.get("receipt")
         if type(receipt) is dict:
             receipt["status"] = "interrupted"
-            receipt["stop_reason"] = "no active workflow worker for this store; submitted runs remain separately inspectable"
+            receipt["stop_reason"] = ("组合控制进程和计算进程均已退出，未完成记录保留" if record.get("kind") == "portfolio"
+                                      else "no active workflow worker for this store; submitted runs remain separately inspectable")
         self._save_record(record)
         return record
 
@@ -472,6 +528,14 @@ class WorkflowJobs:
                 record = _load_record(row[1])
                 if record.get("status") != "queued":
                     connection.rollback()
+                    return None
+                if record.get("kind") == "portfolio" and record.get("cancel_requested"):
+                    record.update(status="cancelled", finished_at=_utc_now())
+                    record["receipt"]["status"] = "cancelled"
+                    for case in record["receipt"]["cases"]:
+                        case.update(status="cancelled", run_status="cancelled")
+                    connection.execute("UPDATE jobs SET record=? WHERE job_id=?", (_canonical(record), job_id))
+                    connection.commit()
                     return None
                 record.update(status="running", pid=os.getpid(), started_at=_utc_now())
                 if isinstance(record.get("receipt"), dict):
@@ -549,6 +613,133 @@ def _safe_error(exc: BaseException) -> str:
     return message[:1000]
 
 
+def _portfolio_execution_is_alive(root: Path, job_id: str) -> bool | None:
+    from .portfolio_archive import archive_root
+    destination = archive_root(_RootOnlyStore(root))
+    if not (destination / job_id).exists():
+        return False
+    try:
+        from .portfolio_cli import execution_is_alive
+        return execution_is_alive(destination, job_id)
+    except Exception:
+        # An uncertain process or partially written ownership record is not
+        # permission to admit another calculation.
+        return None
+
+
+def _recover_portfolio_completion(root: Path, record: dict[str, Any]) -> dict[str, Any] | None:
+    from .portfolio_archive import PortfolioArchive, archive_root
+    try:
+        detail = PortfolioArchive(archive_root(_RootOnlyStore(root))).get(record["job_id"])
+        if (detail["receipt"]["status"] != "completed" or detail["result"] is None
+                or detail["receipt"].get("code_version") != record["plan"]["source_version"]
+                or detail["result"].get("config_sha256") != record["plan"]["config_sha256"]):
+            return None
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+    recovered = deepcopy(record)
+    receipt = deepcopy(record["receipt"])
+    receipt["status"] = "completed"
+    receipt["recovered_from_completed_archive"] = True
+    receipt["cases"][0].update(status="completed", run_status="completed", run_id=record["job_id"],
+                               report_url="/portfolio#" + record["job_id"])
+    recovered.update(status="completed", finished_at=detail["receipt"].get("finished_at") or _utc_now(),
+                     receipt=receipt, error=None)
+    return recovered
+
+
+def _interrupt_portfolio_archive(root: Path, job_id: str) -> None:
+    """Reconcile only a matching unfinished receipt after both owners are gone."""
+    from .portfolio_archive import archive_root
+    if _portfolio_execution_is_alive(root, job_id) is not False:
+        return
+    root_fd = directory_fd = -1
+    try:
+        root_fd = os.open(archive_root(_RootOnlyStore(root)), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        directory_fd = os.open(_job_id(job_id), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+        fd = os.open("receipt.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
+        with os.fdopen(fd, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return
+            raw = stream.read(32769)
+        if len(raw) > 32768:
+            return
+        receipt = json.loads(raw)
+        if (type(receipt) is not dict or receipt.get("run_id") != job_id or receipt.get("mode") != "RESEARCH_ONLY"
+                or receipt.get("paper_admission") is not False or receipt.get("status") not in _ACTIVE):
+            return
+        receipt.update(status="interrupted", finished_at=_utc_now(),
+                       error="组合控制进程和计算进程均已退出；未完成记录保留，未重新执行")
+        data = json.dumps(receipt, ensure_ascii=False, allow_nan=False, indent=2).encode()
+        if len(data) > 32768:
+            return
+        temporary = ".recovery-" + uuid.uuid4().hex
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory_fd)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, "receipt.json", src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+    except (OSError, ValueError, TypeError):
+        # A corrupt or unavailable artifact stays inspectable; no other path
+        # is substituted and no original data or worker is touched.
+        return
+    finally:
+        if directory_fd >= 0:
+            os.close(directory_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
+
+
+def _run_portfolio_job(store: Any, record: dict[str, Any], jobs: WorkflowJobs) -> None:
+    from .portfolio_archive import archive_root
+    receipt = deepcopy(record["receipt"])
+    deadline = record.get("_monotonic_deadline", time.monotonic() + record["plan"]["limits"]["wall_seconds"])
+    case = receipt["cases"][0]
+    case.update(status="running", run_status="running", run_id=record["job_id"])
+    receipt.update(status="running", source_version=record["plan"]["source_version"])
+    jobs._persist_progress(record["job_id"], {"type": "portfolio_started", "receipt": receipt})
+    try:
+        from .portfolio_cli import run_bounded
+        remaining = deadline - time.monotonic()
+        if remaining < 0.1:
+            raise TimeoutError("组合任务准备阶段已超过时间上限")
+        execution = run_bounded(
+            record["plan"]["cases"][0]["config"], archive_root(store),
+            run_id=record["job_id"], timeout_seconds=min(remaining, record["plan"]["limits"]["wall_seconds"]),
+            cancel_path=jobs.cancel_path(record["job_id"]),
+            expected_source_version=record["plan"]["source_version"],
+        )
+        status = execution.get("status")
+        if status not in _TERMINAL:
+            raise ValueError("组合执行未返回有效终态")
+        receipt["execution"] = {key: deepcopy(execution[key]) for key in (
+            "status", "run_id", "created_at", "finished_at", "frames", "code_version", "cleanup_confirmed", "error", "limits"
+        ) if key in execution}
+        if execution.get("cleanup_confirmed") is False:
+            receipt["stop_reason"] = "计算进程清理状态不确定，保留活动记录并拒绝重复执行"
+            jobs._persist_progress(record["job_id"], {"type": "cleanup_unconfirmed", "receipt": receipt})
+            return
+        if status == "completed" and (execution.get("cleanup_confirmed") is not True
+                or execution.get("code_version") != record["plan"]["source_version"]
+                or execution.get("run_id") != record["job_id"]):
+            raise ValueError("组合执行版本或终态身份不一致")
+        case.update(status=status, run_status=status)
+        if status == "completed":
+            case["report_url"] = "/portfolio#" + record["job_id"]
+        jobs._finish_worker(record["job_id"], status, receipt=receipt, error=execution.get("error"))
+    except Exception as exc:
+        # run_bounded owns child cleanup. If it failed before it could confirm
+        # that cleanup, preserve the durable active row until ownership clears.
+        if _portfolio_execution_is_alive(jobs.root, record["job_id"]) is not False:
+            receipt["stop_reason"] = "组合控制进程异常，计算状态仍需核查；未重新提交"
+            jobs._persist_progress(record["job_id"], {"type": "execution_unconfirmed", "receipt": receipt})
+            return
+        status = "timed_out" if isinstance(exc, TimeoutError) else "failed"
+        case.update(status=status, run_status=status)
+        jobs._finish_worker(record["job_id"], status, receipt=receipt, error=_safe_error(exc))
+
+
 def _worker_is_alive(pid: int, job_id: str, store_root: Path) -> bool | None:
     """Return None when process identity cannot be determined safely."""
     try:
@@ -582,6 +773,9 @@ def _worker_is_alive(pid: int, job_id: str, store_root: Path) -> bool | None:
 
 
 def _run_job(store: Any, record: dict[str, Any], jobs: WorkflowJobs) -> None:
+    if record["kind"] == "portfolio":
+        _run_portfolio_job(store, record, jobs)
+        return
     from .batch import _run_normalized_plan
 
     plan = record["plan"]
@@ -663,11 +857,26 @@ def _worker_main(argv: list[str] | None = None) -> int:
         record = jobs._claim_job(job_id, args.token)
         if record is None:
             return 0
+        previous_alarm = None
+        if record["kind"] == "portfolio":
+            # This OS default action also terminates a controller stuck while
+            # importing native libraries. The owned calculation has its own
+            # bootstrap deadline, so it remains bounded after controller loss.
+            budget = record["plan"]["limits"]["wall_seconds"]
+            record["_monotonic_deadline"] = time.monotonic() + budget
+            previous_alarm = signal.getsignal(signal.SIGALRM)
+            signal.signal(signal.SIGALRM, signal.SIG_DFL)
+            signal.alarm(math.ceil(budget) + 10)
         from .store import RunStore
 
         # Always provide the explicit persisted root; never use DEFAULT_STORE.
-        store = RunStore(store_root)
-        _run_job(store, record, jobs)
+        try:
+            store = RunStore(store_root)
+            _run_job(store, record, jobs)
+        finally:
+            if previous_alarm is not None:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, previous_alarm)
         return 0
     except BaseException:
         return 1

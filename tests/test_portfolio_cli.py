@@ -1,4 +1,4 @@
-"""Verify CLI publication and scope without executing a portfolio strategy."""
+"""CLI compatibility and parent-side portfolio execution contracts."""
 import contextlib
 import io
 import json
@@ -8,7 +8,8 @@ from types import ModuleType
 import unittest
 from unittest.mock import patch
 
-from research_center.portfolio_cli import main
+from research_center.portfolio_cli import main, run_bounded
+from research_center.store import ROOT
 
 
 class PortfolioCliTest(unittest.TestCase):
@@ -17,56 +18,92 @@ class PortfolioCliTest(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.file = self.root / "config.json"
-        self.file.write_text("{}")
+        self.file.write_text("{}", encoding="utf-8")
         self.store = self.root / "output"
-        self.kernel = ModuleType("research_center.portfolio_kernel")
-        self.kernel.normalize_portfolio = lambda value: {"symbol_configs": []}
-        self.kernel.initial_state = lambda config: {}
-        self.kernel.advance = lambda config, state, frames, final: {"frames": len(frames)}
-        self.kernel.result_from_state = lambda config, state: state
-        self.provenance = ModuleType("research_center.portfolio_provenance")
-        self.provenance.snapshot_sources = lambda root: {"schema_version": 1, "source_version": "f" * 64, "files": {}, "runtime": {"python": "synthetic"}}
-        self.provenance.verify_sources = lambda root, snapshot: None
 
-    def call(self, *args):
-        with patch.dict("sys.modules", {"research_center.portfolio_kernel": self.kernel,
-                "research_center.portfolio_provenance": self.provenance}), contextlib.redirect_stdout(io.StringIO()):
-            return main(["--store", str(self.store), *args])
+    def _kernel(self):
+        kernel = ModuleType("research_center.portfolio_kernel")
+        kernel.normalize_portfolio = lambda value: {"symbol_configs": [], "source": value}
+        return kernel
 
-    def test_plan_has_no_output_directory_or_data_read(self):
-        with patch("research_center.portfolio_cli.load_aligned_frames") as load:
-            self.assertEqual(self.call("plan", "--file", str(self.file)), 0)
-            load.assert_not_called()
+    def test_plan_reads_config_without_creating_run_store_or_loading_data(self):
+        output = io.StringIO()
+        with patch.dict("sys.modules", {"research_center.portfolio_kernel": self._kernel()}), \
+                patch("research_center.portfolio_cli.load_aligned_frames") as load, \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(main(["--store", str(self.store), "plan", "--file", str(self.file)]), 0)
+        load.assert_not_called()
+        self.assertFalse(self.store.exists())
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["mode"], "RESEARCH_ONLY")
+        self.assertFalse(payload["paper_admission"])
+
+    def test_cli_run_uses_bounded_api_and_timeout_option(self):
+        expected = {"run_id": "a" * 32, "status": "failed", "cleanup_confirmed": True}
+        output = io.StringIO()
+        with patch.dict("sys.modules", {"research_center.portfolio_kernel": self._kernel()}), \
+                patch("research_center.portfolio_cli.run_bounded", return_value=expected) as bounded, \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(main(["--store", str(self.store), "run", "--file", str(self.file),
+                                   "--timeout-seconds", "0.5"]), 1)
+        self.assertEqual(bounded.call_args.args[0]["source"], {})
+        self.assertEqual(bounded.call_args.args[1], self.store)
+        self.assertEqual(bounded.call_args.kwargs["timeout_seconds"], 0.5)
+        self.assertEqual(json.loads(output.getvalue()), expected)
         self.assertFalse(self.store.exists())
 
-    def test_load_failure_has_terminal_receipt_and_no_success_result(self):
-        with patch("research_center.portfolio_cli.load_aligned_frames", side_effect=ValueError("unaligned")):
-            self.assertEqual(self.call("run", "--file", str(self.file)), 1)
-        directory = next(self.store.iterdir())
-        receipt = json.loads((directory / "receipt.json").read_text())
+    def test_cli_show_keeps_receipt_lookup(self):
+        run_id = "b" * 32
+        directory = self.store / run_id
+        directory.mkdir(parents=True)
+        receipt = {"run_id": run_id, "status": "timed_out", "cleanup_confirmed": True}
+        (directory / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(main(["--store", str(self.store), "show", run_id]), 0)
+        self.assertEqual(json.loads(output.getvalue()), receipt)
+
+    def test_run_bounded_has_no_stdout_and_records_setup_failure_terminally(self):
+        kernel = self._kernel()
+        output = io.StringIO()
+        with patch.dict("sys.modules", {"research_center.portfolio_kernel": kernel}), \
+                patch("research_center.portfolio_cli._source_snapshot", side_effect=OSError("private path")), \
+                contextlib.redirect_stdout(output):
+            receipt = run_bounded({}, self.store, run_id="c" * 32)
+        self.assertEqual(output.getvalue(), "")
         self.assertEqual(receipt["status"], "failed")
-        self.assertFalse((directory / "result.json").exists())
-        self.assertEqual(self.call("show", directory.name), 0)
+        self.assertTrue(receipt["cleanup_confirmed"])
+        self.assertNotIn("private path", receipt.get("error", ""))
+        self.assertTrue((self.store / ("c" * 32) / "receipt.json").exists())
+        self.assertFalse((self.store / ("c" * 32) / "result.json").exists())
 
-    def test_success_publishes_hashes_and_unique_runs(self):
-        with patch("research_center.portfolio_cli.load_aligned_frames", return_value=([{}], {})):
-            for _ in range(2):
-                self.assertEqual(self.call("run", "--file", str(self.file)), 0)
-        self.assertEqual(len(list(self.store.iterdir())), 2)
-        for directory in self.store.iterdir():
-            receipt = json.loads((directory / "receipt.json").read_text())
-            self.assertEqual(receipt["status"], "completed")
-            self.assertEqual(set(receipt["artifact_sha256"]), {"config.json", "data_manifest.json", "state.json", "result.json", "source_snapshot.json"})
-            self.assertEqual(receipt["code_version"], "f" * 64)
-            result = json.loads((directory / "result.json").read_text())
-            self.assertEqual(result["provenance"]["source_version"], receipt["code_version"])
-            self.assertFalse(receipt["paper_admission"])
+    def test_expected_source_version_mismatch_fails_before_spawn(self):
+        kernel = self._kernel()
+        fake_snapshot = {
+            "schema_version": 1,
+            "source_version": "f" * 64,
+            "runtime": {},
+            "files": {},
+        }
+        with patch.dict("sys.modules", {"research_center.portfolio_kernel": kernel}), \
+                patch("research_center.portfolio_cli._source_snapshot", return_value=fake_snapshot), \
+                patch("research_center.portfolio_cli._verify_source_snapshot"), \
+                patch("research_center.portfolio_cli._spawn_worker") as spawn:
+            receipt = run_bounded({}, self.store, run_id="d" * 32,
+                                  expected_source_version="0" * 64)
+        spawn.assert_not_called()
+        self.assertEqual(receipt["status"], "failed")
+        self.assertEqual(receipt["code_version"], "f" * 64)
+        self.assertTrue(receipt["cleanup_confirmed"])
+        self.assertFalse((self.store / ("d" * 32) / "result.json").exists())
 
-    def test_changed_sources_fail_before_success_result_publication(self):
-        with patch.object(self.provenance, "verify_sources", side_effect=[None, ValueError("执行源码已变化")]), patch(
-                "research_center.portfolio_cli.load_aligned_frames", return_value=([{}], {})):
-            self.assertEqual(self.call("run", "--file", str(self.file)), 1)
-        directory = next(self.store.iterdir())
-        self.assertEqual(json.loads((directory / "receipt.json").read_text())["status"], "failed")
-        self.assertTrue((directory / "source_snapshot.json").exists())
-        self.assertFalse((directory / "result.json").exists())
+    def test_existing_protected_research_and_market_paths_remain_rejected(self):
+        with patch.dict("sys.modules", {"research_center.portfolio_kernel": self._kernel()}):
+            for protected in (ROOT / "data" / "blocked", ROOT / "results" / "research_center" / "blocked"):
+                with self.subTest(protected=protected), self.assertRaisesRegex(ValueError, "独立的研究目录"):
+                    run_bounded({}, protected, run_id="e" * 32)
+        self.assertFalse((ROOT / "data" / "blocked" / ("e" * 32)).exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
