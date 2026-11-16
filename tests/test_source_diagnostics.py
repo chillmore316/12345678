@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 import requests
+import socket
 from research_center import source_diagnostics as diag
 
 NOW = datetime(2026,11,1,16,tzinfo=diag.SH)
@@ -40,6 +41,38 @@ class Session:
         return result
 
 class SourceDiagnosticsTests(unittest.TestCase):
+    def test_stock_routes_and_immutable_receipts_match_instrument(self):
+        for provider in ('promax', 'datahub'):
+            for symbol in ('000001.SZ', '603283.SH'):
+                session = Session([Response({'data':[row('daily',ts_code=symbol)]}),
+                                   Response({'data':[row(ts_code=symbol)]})])
+                result = diag.run_check(provider, symbol, now=NOW, secret_reader=lambda _:SECRET,
+                                        session_factory=lambda:session)
+                self.assertEqual([call[0].rsplit('/',1)[-1] for call in session.calls],
+                                 ['daily','rt_min' if provider=='promax' else 'rt-min'])
+                self.assertEqual(result['network_attempts'],2)
+                self.assertFalse(result['paper_admission'])
+                with tempfile.TemporaryDirectory() as tmp:
+                    saved=diag.SourceChecks(tmp).save(result)
+                    self.assertEqual(diag.SourceChecks(tmp).detail(saved['check_id']),saved)
+
+    def test_dns_and_rate_limit_are_distinct_without_error_text_or_retries(self):
+        error = requests.ConnectionError(SECRET)
+        error.__cause__ = socket.gaierror(-2, SECRET)
+        result, session = self.check([error, Response({},status=429)])
+        self.assertEqual([item['outcome'] for item in result['checks']],['dns_error','rate_limited'])
+        self.assertEqual(len(session.calls),2)
+        self.assertEqual(result['checks'][1]['response_bytes'],0)
+        self.assertNotIn(SECRET,json.dumps(result))
+        with tempfile.TemporaryDirectory() as tmp:
+            saved=diag.SourceChecks(tmp).save(result)
+            self.assertEqual(diag.SourceChecks(tmp).detail(saved['check_id']),saved)
+            for index in (0,1):
+                invalid=deepcopy(result)
+                invalid['checks'][index]['http_status']=200
+                with self.assertRaises(ValueError):
+                    diag.SourceChecks(tmp).save(invalid)
+
     def check(self,responses,provider='promax',secret=lambda _:SECRET):
         session=Session(responses)
         record=diag.run_check(provider,'510300.SH',now=NOW,secret_reader=secret,session_factory=lambda:session)
@@ -104,7 +137,7 @@ class SourceDiagnosticsTests(unittest.TestCase):
 
     def test_input_rejected_before_credentials(self):
         with patch('live_paper_compare.provider.keychain_secret',side_effect=AssertionError('unexpected')):
-            for provider,symbol in [('unknown','510300.SH'),('promax','*'),('promax','000001.SZ')]:
+            for provider,symbol in [('unknown','510300.SH'),('promax','*'),('promax','300001.SZ')]:
                 with self.assertRaises(ValueError):diag.run_check(provider,symbol)
 
     def test_actual_wall_deadline_interrupts_stalled_get_and_restores_handler(self):

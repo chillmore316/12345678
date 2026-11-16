@@ -32,3 +32,9 @@ GitHub 插件本次可读取公开参考代码；当前账户可写目标仅见 
 - [Qlib recorder.py](https://github.com/microsoft/qlib/blob/main/qlib/workflow/recorder.py)：`Recorder` 定义 `start_run`、`end_run`、`save_objects` 等实验生命周期接口，可参考其运行编号、配置和产物归档方式。该链接指向活动分支；本次未复制源码或新增依赖。
 
 后续远端流程：按用户授权使用公开仓库，核对权限及待发布清单，再同步纯代码基线，开发使用 `codex/` 分支，独立复核后建立 PR。远端提交不包含真实行情、运行账本、凭证、机器路径配置或原始混合历史。
+
+## 2026-11-13 公开基线发布
+
+用户授权的公开仓库为 [chillmore316/12345678](https://github.com/chillmore316/12345678)。已通过插件发布提交 `bcee542f4744fff38f8d573cb58e255341eb0989`，当前101文件树为 `6de97c59f41a79a5f1d8ef538f56265afad93e1f`。远端main引用、逐文件blob哈希和权限均与审阅后的本地树一致。恢复时重新运行315项Python和8项Node测试通过。
+
+本机shell的GitHub DNS解析失败，普通git fetch未成功；通过插件读取远端Git提交及树元数据，按原始Git对象校验SHA后在独立本地代码仓库建立对应对象和origin/main。该仓库main已跟踪远端同一提交，旧本地纯代码历史保留在codex/local-prepublication。原混合工作区未设置远端，也未上传旧历史。组合功能仍在开发验收，尚未进入公开main。

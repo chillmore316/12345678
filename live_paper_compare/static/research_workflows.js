@@ -218,7 +218,8 @@ function renderJob(job) {
   byId('job-status').textContent = label(job.status) + ' · 实验 ' + job.experiment_id;
   const group = byId('experiment-link');
   group.hidden = !validId(job.experiment_id);
-  if (!group.hidden) group.href = '/research?experiment=' + job.experiment_id;
+  if (job.kind === 'portfolio') group.hidden = job.status !== 'completed' || !validId(job.job_id);
+  if (!group.hidden) group.href = job.kind === 'portfolio' ? '/portfolio#' + job.job_id : '/research?experiment=' + job.experiment_id;
   const cases = job.plan?.cases || [];
   const rows = cases.map((planned, index) => {
     const item = job.receipt?.cases?.[index] || planned;
@@ -227,9 +228,9 @@ function renderJob(job) {
     row.append(element('td', planned.label), element('td', window.start ? window.start + ' 至 ' + window.end : '—'),
       element('td', label(item.status || 'not_started')));
     const report = element('td');
-    if (validId(item.run_id)) {
+    if (validId(item.run_id) && (job.kind !== 'portfolio' || job.status === 'completed')) {
       const link = element('a', '打开回测');
-      link.href = '/research#' + item.run_id;
+      link.href = (job.kind === 'portfolio' ? '/portfolio#' : '/research#') + item.run_id;
       report.append(link);
     }
     row.append(report);
@@ -237,7 +238,7 @@ function renderJob(job) {
   });
   byId('job-cases').replaceChildren(...rows);
   byId('job-note').textContent = activeStatuses.has(job.status) ? '任务在本机后台执行。关闭此页后，可以重新打开查看进度。' :
-    job.status === 'completed' ? '可打开各窗口的独立报告。' :
+    job.status === 'completed' ? (job.kind === 'portfolio' ? '可打开共享资金组合报告。数据仍未认证。' : '可打开各窗口的独立报告。') :
     (job.error || job.receipt?.stop_reason || '已停止提交后续窗口。已创建的回测仍可在历史中查看。');
 }
 
@@ -262,7 +263,7 @@ async function refresh() {
     if (reading !== listRead) return;
     const items = (data.jobs || []).filter(job => validId(job.job_id)).map(job => {
       const item = element('li');
-      const names = {rolling: '滚动验证', symbols: '多标的对照', batch: '参数对照'};
+      const names = {rolling: '滚动验证', symbols: '多标的对照', batch: '参数对照', portfolio: '共享资金组合'};
       const link = element('a', (names[job.kind] || '研究实验') + ' · ' + label(job.status) + ' · ' + job.job_id.slice(0, 10));
       link.href = '#' + job.job_id;
       item.append(link);

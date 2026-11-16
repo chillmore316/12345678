@@ -89,13 +89,15 @@ def main():
     register_candidate.add_argument('--label', default='')
     for name in ['show', 'report', 'cancel', '_worker']:
         commands.add_parser(name).add_argument('run_id')
-    for replay_name in ('replay', 'python-replay'):
+    for replay_name in ('replay', 'python-replay', 'portfolio-replay'):
         replay = commands.add_parser(replay_name, help='独立历史模拟演练账户')
         replay_commands = replay.add_subparsers(dest='replay_command', required=True)
         replay_commands.add_parser('list')
         create_replay = replay_commands.add_parser('create')
         create_replay.add_argument('run_id')
         create_replay.add_argument('--label', default='')
+        if replay_name == 'portfolio-replay':
+            create_replay.add_argument('--request-id', required=True)
         replay_commands.add_parser('show').add_argument('account_id')
         for action in ('resume', 'pause', 'step'):
             action_parser = replay_commands.add_parser(action)
@@ -207,19 +209,22 @@ def main():
                 output = candidates.list()
         except (OSError, ValueError, TypeError, KeyError):
             parser.error('候选数据检查失败；请核对文件、SHA、字段和登记编号，原数据不会改写。')
-    elif args.command in {'replay', 'python-replay'}:
+    elif args.command in {'replay', 'python-replay', 'portfolio-replay'}:
         from .http import replay_store
-        accounts = replay_store(store, 'python-replays' if args.command == 'python-replay' else 'replays')
+        namespace = {'python-replay': 'python-replays', 'portfolio-replay': 'portfolio-replays'}.get(args.command, 'replays')
+        accounts = replay_store(store, namespace)
         if args.replay_command == 'list':
-            output = {'accounts': accounts.list()}
+            output = {'accounts': accounts.list_accounts() if args.command == 'portfolio-replay' else accounts.list()}
         elif args.replay_command == 'create':
-            output = accounts.create(args.run_id, args.label)
+            output = (accounts.create(args.run_id, args.label, args.request_id) if args.command == 'portfolio-replay'
+                      else accounts.create(args.run_id, args.label))
         elif args.replay_command == 'show':
             output = accounts.detail(args.account_id)
         elif args.replay_command == 'step':
             output = accounts.step(args.account_id, args.steps, args.revision, args.request_id)
         else:
-            output = getattr(accounts, args.replay_command)(args.account_id, args.revision)
+            action = 'start' if args.command == 'portfolio-replay' and args.replay_command == 'resume' else args.replay_command
+            output = getattr(accounts, action)(args.account_id, args.revision)
     elif args.command in {'doctor', 'data'}:
         from .health import workspace_health, data_catalog
         output = workspace_health(store) if args.command == 'doctor' else data_catalog(store)
