@@ -18,7 +18,7 @@
 <main>
   <header class="topbar">
     <div><p class="eyebrow">本地量化研究工具</p><h1>组合研究工作台</h1><p class="subtitle">预检并提交本地历史组合研究，或查看已保存的共享资金回放报告。</p></div>
-    <div class="top-actions"><span class="pill">RESEARCH_ONLY · 历史组合</span><a class="btn" href="/research">返回单股工作台</a><button class="btn" id="refresh-btn" type="button">刷新历史</button></div>
+    <div class="top-actions"><span class="pill">RESEARCH_ONLY · 历史组合</span><a class="btn" href="/portfolio-replay">组合历史演练</a><a class="btn" href="/research">返回单股工作台</a><button class="btn" id="refresh-btn" type="button">刷新历史</button></div>
   </header>
   <section class="notice" aria-label="研究边界"><strong>研究范围：</strong>仅进行本机 RESEARCH_ONLY 历史研究，不连接账户；数据与价格尚未认证，结果不构成模拟盘或实盘准入，paper_admission=false。预检只检查配置，确认后才会创建组合任务。</section>
   <section class="panel submit-panel" aria-labelledby="submit-title">
@@ -66,7 +66,7 @@
     </aside>
     <div class="stack">
       <section class="panel" aria-label="组合报告">
-        <div class="detail-head"><div><h2 id="selected-title">选择一条历史组合</h2><p class="status" id="detail-status" role="status" aria-live="polite">选择左侧记录后读取经过完整性校验的报告。</p></div><div class="detail-links"><a class="hidden" id="share-link">分享此组合报告</a></div></div>
+        <div class="detail-head"><div><h2 id="selected-title">选择一条历史组合</h2><p class="status" id="detail-status" role="status" aria-live="polite">选择左侧记录后读取经过完整性校验的报告。</p></div><div class="detail-links"><a class="hidden" id="replay-link">创建组合历史演练</a><a class="hidden" id="share-link">分享此组合报告</a></div></div>
         <div class="config-grid" id="config-grid">
           <div class="config-item"><div class="config-label">标的顺序</div><div class="config-value" id="config-symbols">—</div></div>
           <div class="config-item"><div class="config-label">回放日期</div><div class="config-value" id="config-dates">—</div></div>
@@ -129,9 +129,9 @@
   function resetMetrics(){['metric-equity','metric-return','metric-drawdown','metric-sharpe','metric-trades','metric-fees'].forEach(function(name){text(name,'—');});}
   function resetTables(){var positions=id('positions-body'),trades=id('trades-body');clear(positions);clear(trades);var p=make('tr'),pc=make('td','empty-cell','尚无组合报告。');pc.setAttribute('colspan','6');p.append(pc);positions.append(p);var t=make('tr'),tc=make('td','empty-cell','尚无组合报告。');tc.setAttribute('colspan','7');t.append(tc);trades.append(t);text('trades-caption','尚无组合报告。');}
   function resetChart(message){var svg=id('equity-chart');clear(svg);setHidden('equity-chart',true);setHidden('chart-empty',false);text('chart-empty',message||'暂无有效权益与现金数据。');}
-  function clearReport(message){state.detail=null;resetConfig();resetMetrics();resetTables();resetChart('暂无有效权益与现金数据。');setHidden('readiness-box',true);setHidden('share-link',true);text('selected-title',state.selectedId||'选择一条历史组合');text('detail-status',message||'请选择左侧记录。');id('detail-status').className='status';}
+  function clearReport(message){state.detail=null;resetConfig();resetMetrics();resetTables();resetChart('暂无有效权益与现金数据。');setHidden('readiness-box',true);setHidden('share-link',true);setHidden('replay-link',true);text('selected-title',state.selectedId||'选择一条历史组合');text('detail-status',message||'请选择左侧记录。');id('detail-status').className='status';}
   function hashFor(idValue){var runId=safeRunId(idValue);return runId?'#'+encodeURIComponent(runId):'';}
-  function openShare(runId){var link=id('share-link'),hash=hashFor(runId);link.href=hash;setHidden('share-link',!hash);}
+  function openShare(runId){var link=id('share-link'),hash=hashFor(runId);link.href=hash;setHidden('share-link',!hash);var replay=id('replay-link');replay.href=safeRunId(runId)?'/portfolio-replay?run_id='+encodeURIComponent(runId):'';setHidden('replay-link',!hash);}
   function fetchJson(url){return fetch(url).then(function(response){if(!response||!response.ok){var error=new Error('http_error');error.status=response&&response.status;throw error;}return response.json();});}
   function renderConfig(config){var symbols=Array.isArray(config.symbols)?config.symbols.filter(function(value){return typeof value==='string';}):[];text('config-symbols',symbols.length?symbols.join(' → '):'—');text('config-dates',timeValue(config.start)+' 至 '+timeValue(config.end));var strategy=String(config.strategy||'—');var strategyNames={buy_hold:'买入并持有',sma_cross:'双均线交叉'};text('config-strategy',strategyNames[strategy]||strategy);text('config-cash',money(config.initial_cash));var costs=object(config.costs)?config.costs:config;var rate=number(firstValue(costs.commission_rate,config.commission_rate)),minimum=number(firstValue(costs.min_commission,config.min_commission)),slippage=number(firstValue(costs.slippage_bps,config.slippage_bps));text('config-commission',(rate===null?'—':(rate*100).toLocaleString('zh-CN',{maximumFractionDigits:5})+'%')+' · 最低 '+(minimum===null?'—':money(minimum)));text('config-slippage',slippage===null?'—':decimal(slippage,4)+' 基点');}
   function renderVersion(receipt,result){var provenance=object(result.provenance)?result.provenance:{};var version=receipt.code_version;if(receipt.source_snapshot_status==='archived_and_verified'&&typeof version==='string'&&/^[a-f0-9]{64}$/.test(version)&&provenance.source_version===version){text('config-version','源码已归档 · '+version);}else if(receipt.schema_version===2){text('config-version','源码归档版本不可确认。');}else{text('config-version','旧记录未归档源码，无法按此记录重建执行版本。');}}

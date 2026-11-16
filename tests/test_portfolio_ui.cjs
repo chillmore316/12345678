@@ -155,6 +155,8 @@ vm.runInNewContext(scripts[0][1], {document, window, fetch: fakeFetch, Number, S
   assert.ok(selected, 'valid 32-hex ids load a detail');
   assert.equal(currentHash, '#'+idA, 'selection writes a shareable safe hash');
   assert.equal(ids['share-link'].href, '#'+idA);
+  assert.equal(ids['replay-link'].href, '/portfolio-replay?run_id='+idA);
+  assert.equal(ids['replay-link'].classList.contains('hidden'), false);
   assert.match(ids['detail-status'].textContent, /未认证/);
   assert.match(ids['readiness-title'].textContent, /不一致/);
   assert.match(ids['readiness-symbols'].textContent, /000001\.SZSE：对照不一致/);
@@ -275,6 +277,7 @@ vm.runInNewContext(scripts[0][1], {document, window, fetch: fakeFetch, Number, S
   assert.equal(ids['trades-body'].children.length, 1);
   assert.match(ids['list-status'].textContent, /读取失败/);
   assert.match(ids['detail-status'].textContent, /旧报告已清除/);
+  assert.equal(ids['replay-link'].classList.contains('hidden'), true);
   assert.ok(requestUrls.every(url => url === '/api/research/portfolios' || /^\/api\/research\/portfolios\/[a-f0-9]{32}$/.test(url)));
   process.stdout.write('PASS: Chinese research-only portfolio report, GET-only API, safe hashes/text, stale and failure clearing, ordered holdings, real-time SVG and empty-data guard\n');
 })().catch(error => { process.stderr.write(error.stack+'\n'); process.exitCode = 1; });

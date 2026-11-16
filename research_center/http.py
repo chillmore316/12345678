@@ -23,6 +23,9 @@ def respond(handler, status, data, content_type='application/json; charset=utf-8
 
 
 def replay_store(store, namespace):
+    if namespace == 'portfolio-replays':
+        from .portfolio_replay_accounts import PortfolioReplayAccounts
+        return PortfolioReplayAccounts(store)
     if namespace == 'python-replays':
         from .python_replay_accounts import PythonReplayAccounts
         return PythonReplayAccounts(store)
@@ -32,7 +35,7 @@ def replay_store(store, namespace):
 
 def handle(handler, store, method='GET', *, verification_only=False):
     path = urlparse(handler.path).path
-    if path not in {'/research', '/research/', '/portfolio', '/portfolio/', '/replay', '/replay/', '/data-check', '/data-check/', '/source-check', '/source-check/', '/python-strategy', '/python-strategy/', '/python-replay', '/python-replay/', '/research-workflows', '/research-workflows/'} and not path.startswith('/api/research/'):
+    if path not in {'/research', '/research/', '/portfolio', '/portfolio/', '/portfolio-replay', '/portfolio-replay/', '/replay', '/replay/', '/data-check', '/data-check/', '/source-check', '/source-check/', '/python-strategy', '/python-strategy/', '/python-replay', '/python-replay/', '/research-workflows', '/research-workflows/'} and not path.startswith('/api/research/'):
         return False
     # Loopback binding alone does not stop browser DNS rebinding. Protect
     # read paths as well as writes: records contain local research details.
@@ -45,6 +48,9 @@ def handle(handler, store, method='GET', *, verification_only=False):
         respond(handler, 403, {'error': '备份验证模式只允许读取，不能提交任务或修改演练账户。'})
         return True
     try:
+        from .portfolio_replay_http import handle_portfolio_replays
+        if handle_portfolio_replays(handler, store, method, path, respond):
+            return True
         if method == 'GET' and path in {'/portfolio', '/portfolio/'}:
             respond(handler, 200, (ROOT / 'live_paper_compare/static/portfolio.html').read_bytes(), 'text/html; charset=utf-8')
             return True
@@ -314,13 +320,21 @@ def handle(handler, store, method='GET', *, verification_only=False):
             message = '策略或执行代码已变化，请用当前版本重跑回测后创建新的演练账户。'
         elif kind == 'PythonReplayAccountError':
             message = '历史演练请求未通过检查，原检查点保持不变。请核对账户状态、参数和隔离执行环境。'
+        elif kind == 'PortfolioReplayRevisionConflict':
+            message = '组合账户进度已更新，请刷新后操作；重试原请求须保留原编号和参数。'
+        elif kind == 'PortfolioReplaySourceChanged':
+            message = '组合执行代码已变化，请用当前版本重跑回测并新建历史演练。原账户仍可读取。'
+        elif kind == 'PortfolioReplayAccountError':
+            message = '组合演练请求未通过检查，原检查点保持不变。请核对来源、账户状态和参数。'
         error = {'error': message, 'code': kind}
+        if kind in {'PortfolioReplayRevisionConflict', 'PortfolioReplaySourceChanged'}:
+            error['rollback_confirmed'] = True
         if kind.startswith('PythonReplay'):
             # These account exceptions contain fixed protocol diagnostics,
             # never guest exception text or source. Clients can distinguish a
             # confirmed rollback from an unknown response loss.
             error['reason'] = str(exc)
-        respond(handler, 409 if kind in {'RevisionConflict', 'SourceCodeChanged', 'PythonReplayRevisionConflict', 'PythonReplaySourceChanged', 'PortfolioArtifactChanged', 'PortfolioSourceChanged'} else 400, error)
+        respond(handler, 409 if kind in {'RevisionConflict', 'SourceCodeChanged', 'PythonReplayRevisionConflict', 'PythonReplaySourceChanged', 'PortfolioArtifactChanged', 'PortfolioSourceChanged', 'PortfolioReplayRevisionConflict', 'PortfolioReplaySourceChanged'} else 400, error)
     except Exception:
         respond(handler, 500, {'error': '研究服务异常，请检查本地日志'})
     return True
@@ -344,6 +358,8 @@ def make_server(store, port=8060, *, verification_only=False):
         def _unsupported_method(self):
             path = urlparse(self.path).path
             if (path == '/api/research/portfolios' or path.startswith('/api/research/portfolios/')
+                    or path == '/api/research/portfolio-replays' or path.startswith('/api/research/portfolio-replays/')
+                    or path in {'/portfolio-replay', '/portfolio-replay/', '/api/research/portfolio-replay.js'}
                     or path == '/api/research/workflows' or path.startswith('/api/research/workflows/')):
                 handle(self, store, self.command, verification_only=verification_only)
             else:

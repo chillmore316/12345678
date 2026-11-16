@@ -21,4 +21,4 @@ node --test tests/*.cjs
 
 研究工作台保持 `RESEARCH_ONLY` 和 `paper_admission=false`。历史演练使用本机回放，不连接券商。
 
-共享资金组合历史研究支持中文预览、后台提交、进度查询、取消及历史报告，见[组合研究说明](docs/PORTFOLIO_RESEARCH.md)。完整组合演练账户仍待实现。
+共享资金组合历史研究支持中文预览、后台提交、进度查询、取消及历史报告，见[组合研究说明](docs/PORTFOLIO_RESEARCH.md)。组合历史账户支持手动推进、恢复及核账，见[历史演练说明](docs/PORTFOLIO_REPLAY.md)。实时模拟盘的数据与执行准入仍需单独验证。

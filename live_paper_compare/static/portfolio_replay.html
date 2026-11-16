@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>组合历史回放 · 本地研究</title>
+  <style>
+    [hidden]{display:none!important}
+    :root{color-scheme:light;--bg:#f4f7fb;--surface:#fff;--soft:#f8fafc;--ink:#172536;--muted:#627286;--line:#dce4ed;--blue:#2463eb;--blue-soft:#eaf1ff;--green:#087a53;--red:#a8323e;--amber:#805900;--amber-bg:#fff6dc;--shadow:0 8px 24px rgba(30,48,72,.06)}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}button,select,input{font:inherit}button{cursor:pointer}main{max-width:1440px;margin:0 auto;padding:24px}.topbar{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:18px}.eyebrow{margin:0 0 4px;color:var(--blue);font-size:12px;font-weight:700;letter-spacing:.05em}h1{margin:0 0 5px;font-size:27px;line-height:1.25}h2{margin:0;font-size:17px}h3{margin:0 0 8px;font-size:14px}.subtitle,.muted,.caption{color:var(--muted)}.subtitle{margin:0}.top-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.pill,.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:36px;padding:7px 11px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);text-decoration:none;font-weight:650}.pill{min-height:31px;border-radius:99px;background:var(--blue-soft);border-color:#d5e2ff;color:#1750bd;white-space:nowrap}.btn:hover,.action:hover{background:var(--soft);border-color:#bdcbd9}.notice{padding:13px 16px;margin-bottom:16px;border:1px solid #efd28b;border-left:4px solid #d99413;border-radius:10px;background:var(--amber-bg);color:#5e4715}.notice strong{color:#563a00}.layout{display:grid;grid-template-columns:minmax(280px,340px) minmax(0,1fr);gap:16px;align-items:start}.stack{display:grid;gap:16px}.panel{min-width:0;padding:17px;border:1px solid var(--line);border-radius:12px;background:var(--surface);box-shadow:var(--shadow)}.panel-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:12px}.caption{font-size:12px}.panel-head .caption{margin-top:3px}.status{min-height:22px;margin:8px 0;color:var(--muted);font-size:13px}.error{color:var(--red)}.ok{color:var(--green)}.source-form{display:grid;gap:10px}.source-form label{display:grid;gap:4px;color:var(--muted);font-size:12px}.source-form select,.source-form input{width:100%;min-width:0;padding:9px;border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--ink)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.action{min-height:36px;padding:7px 11px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);font-weight:650}.action.primary{background:var(--blue);border-color:var(--blue);color:#fff}.action.danger{border-color:#e9c3c6;color:var(--red)}.action:disabled{cursor:default;opacity:.5}.account-list{display:grid;gap:8px;max-height:56vh;overflow:auto}.account-item{display:block;width:100%;padding:10px 11px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink);text-align:left}.account-item:hover{border-color:#9bb5e8;background:#fbfdff}.account-item.selected{border-color:var(--blue);box-shadow:0 0 0 2px rgba(36,99,235,.11);background:#f9fbff}.account-title{font-weight:700;overflow-wrap:anywhere}.account-meta{margin-top:4px;color:var(--muted);font-size:12px}.badge{display:inline-flex;align-items:center;padding:2px 8px;border:1px solid var(--line);border-radius:99px;background:#f5f7fa;color:#58687b;font-size:11px;white-space:nowrap}.badge-running{border-color:#c5d7fb;background:#edf3ff;color:#164fbd}.badge-completed{border-color:#bfe5d3;background:#e5f5ee;color:var(--green)}.empty{padding:17px 12px;border:1px dashed #cbd6e2;border-radius:9px;color:var(--muted);text-align:center}.pending{padding:11px 12px;margin:12px 0;border:1px solid #edcf8a;border-radius:9px;background:#fff8e6;color:#5e4715}.pending strong{display:block;margin-bottom:3px;color:#563a00}.detail-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.detail-head h2{overflow-wrap:anywhere}.metric-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:13px 0}.metric{min-width:0;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--soft)}.metric-label{color:var(--muted);font-size:11px}.metric-value{margin-top:3px;font-size:17px;font-weight:750;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.warning{padding:10px 12px;margin:12px 0;border:1px solid #efd28b;border-radius:8px;background:var(--amber-bg);color:#5e4715}.warning:empty{display:none}.warning strong{color:#563a00}.chart-card{padding:12px;border:1px solid var(--line);border-radius:10px}.chart-sub{margin:3px 0 8px;color:var(--muted);font-size:11px}.chart{display:block;width:100%;height:250px}.chart-empty{min-height:150px;display:grid;place-items:center;border-radius:8px;background:var(--soft);color:var(--muted);text-align:center;padding:14px}.chart .grid-line{stroke:#e8edf3;stroke-width:1}.chart .axis-line{stroke:#aab8c7;stroke-width:1}.chart .axis-label{fill:#627286;font-size:11px}.chart .series-line{stroke:#2463eb;stroke-width:2;fill:none}.csv-links{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 8px}.csv-links a{padding:4px 8px;border:1px solid var(--line);border-radius:7px;background:#fff;color:#164fbd;text-decoration:none;font-size:12px}.section{margin-top:15px}.table-wrap{max-height:330px;overflow:auto;border:1px solid var(--line);border-radius:8px}.data-table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap}.data-table th,.data-table td{padding:8px 9px;border-bottom:1px solid #e8edf3;text-align:left}.data-table th{position:sticky;top:0;z-index:1;background:#f6f8fb;color:#52647a;font-weight:650}.data-table tr:last-child td{border-bottom:0}.empty-cell{text-align:center!important;color:var(--muted);padding:18px!important}.table-caption{margin:5px 0 8px;color:var(--muted);font-size:11px}.foot{margin:17px 2px 3px;color:var(--muted);font-size:12px}.hidden{display:none!important}a{color:#164fbd}
+    @media(max-width:900px){.layout{grid-template-columns:1fr}.account-list{max-height:300px}.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media(max-width:650px){main{padding:14px}.topbar{display:block}.top-actions{margin-top:11px}.detail-head{display:block}.chart{height:220px}}
+    @media(max-width:420px){h1{font-size:23px}.panel{padding:13px}.metric-value{font-size:15px}}
+  </style>
+</head>
+<body>
+<main>
+  <header class="topbar">
+    <div><p class="eyebrow">本地量化研究工具</p><h1>组合历史回放</h1><p class="subtitle">从已完成且源码归档的组合运行创建可恢复账户，按需手动推进历史帧。</p></div>
+    <div class="top-actions"><span class="pill">RESEARCH_ONLY · 历史回放</span><a class="btn" href="/portfolio">组合研究报告</a><a class="btn" href="/research">单股研究工作台</a><button class="btn" id="refresh-btn" type="button">刷新账户</button></div>
+  </header>
+  <section class="notice" aria-label="研究边界"><strong>研究边界：</strong>这里是隔离的共享现金历史演练账户；需要人工点击创建、继续、暂停和步进，不会自动推进，不连接券商或实盘账户。数据状态仍需核实，paper_admission=false，任何局部回放都不构成模拟盘准入。</section>
+  <div class="layout">
+    <aside class="stack">
+      <section class="panel" aria-labelledby="create-title">
+        <div class="panel-head"><div><h2 id="create-title">创建可恢复回放账户</h2><div class="caption">仅接受已完成且有已验证源码归档的历史组合。</div></div><span class="badge">手动控制</span></div>
+        <p class="status" id="source-status" role="status" aria-live="polite">正在读取历史来源…</p>
+        <form class="source-form" id="create-form">
+          <label for="source-select">历史组合来源<select id="source-select" required><option value="">正在读取…</option></select></label>
+          <label for="account-label">账户名称<input id="account-label" type="text" maxlength="80" value="历史组合回放" autocomplete="off" required></label>
+          <button class="action primary" id="create-btn" type="submit" disabled>创建恢复点</button>
+        </form>
+        <p class="caption">创建请求会先保存在本机浏览器；若服务响应中断，刷新页面只会读取账户，不会自动重复创建。之后可显式重试同一请求编号。</p>
+      </section>
+      <section class="panel" aria-labelledby="accounts-title">
+        <div class="panel-head"><div><h2 id="accounts-title">回放账户</h2><div class="caption">账户状态和进度从本地研究服务读取。</div></div></div>
+        <p class="status" id="accounts-status" role="status" aria-live="polite">正在读取回放账户…</p>
+        <div class="account-list" id="account-list"><div class="empty">正在读取回放账户…</div></div>
+        <div class="pending" id="pending-box" hidden role="status" aria-live="polite"><strong id="pending-title">存在尚未确认的请求</strong><span id="pending-message"></span><div class="actions"><button class="action" id="retry-pending-btn" type="button">显式重试同一请求</button><button class="action danger" id="abandon-pending-btn" type="button" hidden>放弃未提交请求并刷新</button></div></div>
+      </section>
+    </aside>
+    <div class="stack">
+      <section class="panel" aria-label="回放账户详情">
+        <div class="detail-head"><div><h2 id="detail-title">选择一个回放账户</h2><p class="status" id="detail-status" role="status" aria-live="polite">刷新账户列表后，从左侧选择账户。</p></div><span class="badge" id="mode-badge">RESEARCH_ONLY</span></div>
+        <div class="warning" id="warnings" aria-live="polite"></div>
+        <div class="metric-grid">
+          <div class="metric"><div class="metric-label">共享现金</div><div class="metric-value" id="cash-value">—</div></div>
+          <div class="metric"><div class="metric-label">当前权益</div><div class="metric-value" id="equity-value">—</div></div>
+          <div class="metric"><div class="metric-label">已推进帧</div><div class="metric-value" id="cursor-value">—</div></div>
+          <div class="metric"><div class="metric-label">剩余帧</div><div class="metric-value" id="remaining-value">—</div></div>
+        </div>
+        <div class="actions" aria-label="回放手动控制">
+          <button class="action" id="resume-btn" type="button" hidden>继续（不自动推进）</button>
+          <button class="action" id="pause-btn" type="button" hidden>暂停</button>
+          <label class="caption" for="step-count">单次步进帧数</label>
+          <select id="step-count" aria-label="单次步进帧数"><option value="1">1 帧</option><option value="60">60 帧</option><option value="240">240 帧</option></select>
+          <button class="action primary" id="step-btn" type="button" disabled>手动步进</button>
+        </div>
+        <p class="caption">继续和暂停只修改账户状态。每次手动步进都是一条独立、可恢复的请求；不会定时或后台自动推进。</p>
+      </section>
+      <section class="panel">
+        <div class="chart-card">
+          <h3>历史权益</h3><div class="chart-sub">只绘制服务实际返回的有限权益点及时间戳；缺失行情和帧不会补点。</div>
+          <div class="chart-empty" id="chart-empty">所选账户尚无可绘制的权益时间序列。</div>
+          <svg class="chart" id="equity-chart" hidden viewBox="0 0 900 250" role="img" aria-label="账户实际权益时间序列"></svg>
+        </div>
+        <div class="section">
+          <div class="panel-head"><div><h3>各标的持仓</h3><div class="table-caption" id="positions-caption">账户持仓来自当前恢复状态。</div></div><div class="csv-links"><a id="csv-equity" href="#">权益 CSV</a><a id="csv-positions" href="#">持仓 CSV</a></div></div>
+          <div class="table-wrap"><table class="data-table"><thead><tr><th>标的</th><th>数量</th><th>可卖</th><th>市值</th><th>成本</th><th>批次数 / 明细</th></tr></thead><tbody id="positions-body"><tr><td class="empty-cell" colspan="6">尚无持仓数据。</td></tr></tbody></table></div>
+        </div>
+        <div class="section">
+          <div class="panel-head"><div><h3>委托</h3><div class="table-caption" id="orders-caption">服务返回的原始历史委托。</div></div><div class="csv-links"><a id="csv-orders" href="#">委托 CSV</a></div></div>
+          <div class="table-wrap"><table class="data-table"><thead id="orders-head"></thead><tbody id="orders-body"><tr><td class="empty-cell">尚无委托数据。</td></tr></tbody></table></div>
+        </div>
+        <div class="section">
+          <div class="panel-head"><div><h3>成交</h3><div class="table-caption" id="trades-caption">服务返回的原始历史成交。</div></div><div class="csv-links"><a id="csv-trades" href="#">成交 CSV</a></div></div>
+          <div class="table-wrap"><table class="data-table"><thead id="trades-head"></thead><tbody id="trades-body"><tr><td class="empty-cell">尚无成交数据。</td></tr></tbody></table></div>
+        </div>
+        <div class="section">
+          <div class="panel-head"><div><h3>回放事件</h3><div class="table-caption" id="events-caption">服务返回的恢复和推进事件。</div></div><div class="csv-links"><a id="csv-events" href="#">事件 CSV</a></div></div>
+          <div class="table-wrap"><table class="data-table"><thead id="events-head"></thead><tbody id="events-body"><tr><td class="empty-cell">尚无事件数据。</td></tr></tbody></table></div>
+        </div>
+      </section>
+    </div>
+  </div>
+  <p class="foot">此工具仅展示隔离账户的历史演练状态。来源归档、运行代码版本、行情时间可用性与数据口径必须分别核对；RESEARCH_ONLY 不代表交易或准入授权。</p>
+</main>
+<script src="/api/research/portfolio-replay.js" defer></script>
+</body>
+</html>
