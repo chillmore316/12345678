@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import socket
 import stat
 import threading
 import uuid
@@ -26,11 +27,11 @@ from .intake import _snapshot_file, _parse_json
 SH = ZoneInfo('Asia/Shanghai')
 MAX_BODY = 262144
 MAX_RECEIPT = 32768
-SYMBOL = re.compile(r'^(?:5\d{5}\.SH|1\d{5}\.SZ)$')
+SYMBOL = re.compile(r'^(?:5\d{5}\.SH|1\d{5}\.SZ|6(?:00|01|03|05)\d{3}\.SH|00[0-3]\d{3}\.SZ)$')
 ID = re.compile(r'^[a-f0-9]{32}$')
 PROVIDERS = ('promax', 'datahub')
 OUTCOMES = {'sample_received', 'empty', 'http_denied', 'http_error',
-            'transport_error', 'timeout', 'invalid_response', 'invalid_sample', 'credential_unavailable'}
+            'transport_error', 'dns_error', 'rate_limited', 'timeout', 'invalid_response', 'invalid_sample', 'credential_unavailable'}
 TEMPORAL = {'no_valid_sample', 'daily_history_sample', 'weekend_sample',
             'outside_regular_hours_sample', 'calendar_unverified_recent_sample', 'stale_sample', 'future_stamp'}
 
@@ -40,6 +41,31 @@ def _finite(value):
         return type(value) in (int,float) and math.isfinite(value)
     except OverflowError:
         return False
+
+
+def _apis(provider, symbol):
+    stock = symbol.startswith(('0', '6'))
+    if stock:
+        return ('daily', 'rt_min' if provider == 'promax' else 'rt-min')
+    return ('fund_daily', 'rt_etf_min') if provider == 'promax' else ('fund-daily', 'rt-min')
+
+
+def _transport_outcome(error):
+    """Classify nested DNS failures without retaining exception text or URLs."""
+    pending, seen = [error], set()
+    for _ in range(32):
+        if not pending:
+            break
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, socket.gaierror) or type(current).__name__ == 'NameResolutionError':
+            return 'dns_error'
+        pending.extend(item for item in (
+            current.__cause__, current.__context__, getattr(current, 'reason', None), *current.args
+        ) if isinstance(item, BaseException))
+    return 'transport_error'
 
 
 @contextmanager
@@ -151,7 +177,7 @@ def _request(session, url, key, params):
 
 def run_check(provider, symbol, *, now=None, secret_reader=None, session_factory=None):
     if provider not in PROVIDERS or not isinstance(symbol, str) or not SYMBOL.fullmatch(symbol):
-        raise ValueError('请选择支持的数据源和单只基金代码')
+        raise ValueError('请选择支持的数据源和单只基金或主板股票代码')
     if threading.current_thread() is not threading.main_thread() or signal.getitimer(signal.ITIMER_REAL)[0]:
         raise ValueError('接源检查只允许在独立CLI主线程运行')
     now = now or datetime.now(SH)
@@ -161,7 +187,7 @@ def run_check(provider, symbol, *, now=None, secret_reader=None, session_factory
     from live_paper_compare.provider import PROMAX_URL, PROMAX_SERVICE, NEW_PLAN1_URL, NEW_PLAN1_SERVICE, keychain_secret
     import requests
     base, service = (PROMAX_URL, PROMAX_SERVICE) if provider == 'promax' else (NEW_PLAN1_URL.replace('http://','https://',1), NEW_PLAN1_SERVICE)
-    apis = ('fund_daily','rt_etf_min') if provider == 'promax' else ('fund-daily','rt-min')
+    apis = _apis(provider, symbol)
     key = None
     try:
         with deadline(5):
@@ -194,14 +220,15 @@ def run_check(provider, symbol, *, now=None, secret_reader=None, session_factory
                 status, size, payload = _request(session, base.rstrip('/')+'/'+api, key, params)
                 item.update(http_status=status, response_bytes=size)
                 if status != 200:
-                    item['outcome'] = 'http_denied' if status in (401,403,407) else 'http_error'
+                    item['outcome'] = ('rate_limited' if status == 429 else
+                                       'http_denied' if status in (401,403,407) else 'http_error')
                 else:
                     item.update(inspect_payload(payload, kind=kind, symbol=symbol, now=now, start=start, end=end))
                     item['outcome'] = 'sample_received' if item['rows'] else 'empty'
             except (TimeoutError, requests.Timeout):
                 item['outcome'] = 'timeout'
-            except requests.RequestException:
-                item['outcome'] = 'transport_error'
+            except requests.RequestException as exc:
+                item['outcome'] = _transport_outcome(exc)
             except Exception:
                 item['outcome'] = 'invalid_sample'
             checks.append(item)
@@ -324,12 +351,16 @@ class SourceChecks:
         for index,item in enumerate(record['checks']):
             if not isinstance(item,dict) or set(item)!=set(_blank('','')):
                 raise ValueError('check schema')
-            apis=('fund_daily','rt_etf_min') if record['provider']=='promax' else ('fund-daily','rt-min')
+            apis=_apis(record['provider'], record['symbol'])
             if item['kind']!=('daily','minute')[index] or item['api']!=apis[index] or item['outcome'] not in OUTCOMES or item['temporal_state'] not in TEMPORAL:
                 raise ValueError('check category')
             for key,maximum in (('rows',7 if index==0 else 15),('response_bytes',MAX_BODY)):
                 if type(item[key]) is not int or not 0<=item[key]<=maximum: raise ValueError('check size')
             if item['http_status'] is not None and (type(item['http_status']) is not int or not 100<=item['http_status']<=599): raise ValueError('HTTP status')
+            if item['outcome']=='rate_limited' and (item['http_status']!=429 or item['rows']):
+                raise ValueError('rate limit inconsistent')
+            if item['outcome']=='dns_error' and (item['http_status'] is not None or item['rows']):
+                raise ValueError('DNS result inconsistent')
             if item['vendor_stale'] is not None and type(item['vendor_stale']) is not bool: raise ValueError('stale metadata')
             if item['age_seconds'] is not None and not _finite(item['age_seconds']): raise ValueError('age')
             if item['latest_time'] is not None:

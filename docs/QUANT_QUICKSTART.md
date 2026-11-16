@@ -177,7 +177,7 @@ Python源码和历史账户的对应入口：
 .venv311/bin/python -m research_center.cli source check --provider promax --symbol 510300.SH
 ```
 
-也可显式选择 `--provider datahub`；每次最多两次请求，不重试、不重定向或自动切换源，凭证从本机已有配置读取。无需新请求即可回看：
+主板股票可改用 `--symbol 000001.SZ` 或 `603283.SH`；ETF 示例为 `510300.SH`。股票请求固定的股票日线和分钟接口，基金请求对应基金接口。也可显式选择 `--provider datahub`；每次最多两次请求，不重试、不重定向或自动切换源，凭证从本机已有配置读取。界面区分域名解析失败、接口限流（429）和请求被拒绝（例如403）；这些失败不证明账户具有或没有某项权限。不会保存供应商错误正文或凭证。无需新请求即可回看：
 
 ```sh
 .venv311/bin/python -m research_center.cli source list

@@ -22,12 +22,12 @@ const ids={};for(const m of html.matchAll(/<([a-z][\w-]*)\b([^>]*)>/gi)){const n
 const document={getElementById:name=>{assert.ok(ids[name],name);return ids[name];},createElement:tag=>{made.push(tag);return new Element(tag);}};
 
 const a='a'.repeat(32),b='b'.repeat(32),outside='c'.repeat(32);
-let olderPrevious=false;
-const summary=id=>({check_id:id,provider:'promax',symbol:'510300.SH',observed_at:olderPrevious&&id===b?'2026-11-01T15:00:00+08:00':'2026-11-01T16:00:00+08:00',status:'SAVED_SAMPLE',mode:'RESEARCH_ONLY',paper_admission:false});
-const detail=id=>({...summary(id),schema_version:1,daily_start:'2026-10-26',daily_end:'2026-11-01',network_attempts:2,retry_count:0,raw_payload_saved:false,source_certification:false,timestamp_semantics_verified:false,coverage_complete:false,runtime_changed:false,checks:[{kind:'daily',outcome:'sample_received',http_status:200,rows:5,latest_time:'2026-10-30T00:00:00+08:00',age_seconds:null,temporal_state:'daily_history_sample'},{kind:'minute',outcome:'sample_received',http_status:200,rows:1,latest_time:'2026-10-30T15:00:00+08:00',age_seconds:176400,temporal_state:'stale_sample'}]});
-let listValue={records:[summary(a),summary(b)],truncated:false},badList=false,badDetail=false,held=false,resolveHeld;
+let olderPrevious=false, stockReceipt=false;
+const summary=id=>({check_id:id,provider:'promax',symbol:stockReceipt?'000001.SZ':'510300.SH',observed_at:olderPrevious&&id===b?'2026-11-01T15:00:00+08:00':'2026-11-01T16:00:00+08:00',status:'SAVED_SAMPLE',mode:'RESEARCH_ONLY',paper_admission:false});
+const detail=id=>({...summary(id),schema_version:1,daily_start:'2026-10-26',daily_end:'2026-11-01',network_attempts:2,retry_count:0,raw_payload_saved:false,source_certification:false,timestamp_semantics_verified:false,coverage_complete:false,runtime_changed:false,checks:stockReceipt?[{kind:'daily',outcome:'rate_limited',http_status:429,rows:0,latest_time:null,age_seconds:null,temporal_state:'no_valid_sample'},{kind:'minute',outcome:'dns_error',http_status:null,rows:0,latest_time:null,age_seconds:null,temporal_state:'no_valid_sample'}]:[{kind:'daily',outcome:'sample_received',http_status:200,rows:5,latest_time:'2026-10-30T00:00:00+08:00',age_seconds:null,temporal_state:'daily_history_sample'},{kind:'minute',outcome:'sample_received',http_status:200,rows:1,latest_time:'2026-10-30T15:00:00+08:00',age_seconds:176400,temporal_state:'stale_sample'}]});
+let listValue={records:[summary(a),summary(b)],truncated:false},badList=false,badDetail=false,badPair=null,held=false,resolveHeld;
 const requests=[];
-async function fetch(url,options){requests.push(url);assert.equal(options.method,undefined);assert.ok(url.startsWith('/api/research/source-checks'));if(url==='/api/research/source-checks')return {ok:!badList,json:async()=>listValue};const ident=url.split('/').at(-1);if(held&&ident===a)return new Promise(resolve=>{resolveHeld=resolve;});return {ok:true,json:async()=>badDetail?{...detail(ident),source_certification:true}:detail(ident)};}
+async function fetch(url,options){requests.push(url);assert.equal(options.method,undefined);assert.ok(url.startsWith('/api/research/source-checks'));if(url==='/api/research/source-checks')return {ok:!badList,json:async()=>listValue};const ident=url.split('/').at(-1);if(held&&ident===a)return new Promise(resolve=>{resolveHeld=resolve;});return {ok:true,json:async()=>{const value=detail(ident);if(badPair)value.checks[0]={kind:'daily',outcome:badPair,http_status:badPair==='dns_error'?403:200,rows:0,latest_time:null,age_seconds:null,temporal_state:'no_valid_sample'};return badDetail?{...value,source_certification:true}:value;}};}
 const window={location:{hash:''},addEventListener(){}};
 vm.runInNewContext(scripts[0][1],{document,window,fetch,console,Number,String,Array,Object,Date,Error,Promise,JSON,decodeURIComponent},{filename:'source_check.html'});
 (async()=>{
@@ -38,6 +38,7 @@ vm.runInNewContext(scripts[0][1],{document,window,fetch,console,Number,String,Ar
  const count=requests.length;await app.open('../private',true);assert.equal(requests.length,count);
  held=true;const pending=app.open(a,false);await app.open(b,true);resolveHeld({ok:false,json:async()=>({})});await pending;assert.match(ids['receipt-id'].textContent,new RegExp(b));held=false;
  badDetail=true;await app.open(a,false);assert.equal(ids.rows.children.length,0);assert.equal(ids['receipt-id'].textContent,'');assert.ok(ids.detail.classList.contains('hidden'));badDetail=false;
+ for(const bad of ['dns_error','rate_limited']){badPair=bad;await app.open(a,false);assert.equal(ids.rows.children.length,0);assert.ok(ids.detail.classList.contains('hidden'));}badPair=null;
  app.state.selected='';window.location.hash='';listValue={records:[],truncated:true};await app.refresh();assert.match(ids['list-status'].textContent,/结果不完整/);assert.doesNotMatch(ids.status.textContent,/尚无检查记录/);
  listValue={records:[],truncated:false};await app.refresh();assert.match(ids['list-status'].textContent,/尚无检查记录/);
  for(const records of [[{check_id:'bad'}],[summary(a),{check_id:'bad'}],[summary(a),summary(a)],Array(101).fill(summary(a))]){listValue={records,truncated:false};await app.refresh();assert.equal(ids['list-status'].textContent,'读取失败');assert.equal(ids.records.children.length,0);assert.equal(ids.rows.children.length,0);}
@@ -46,6 +47,7 @@ vm.runInNewContext(scripts[0][1],{document,window,fetch,console,Number,String,Ar
  olderPrevious=true;listValue={records:[summary(a),summary(b)],truncated:false};
  app.state.selected=a;await app.refresh();assert.match(ids['sample-progression'].textContent,/分钟时间相同/);
  assert.match(ids['sample-progression'].textContent,/不能证明窗口连续覆盖/);
+ stockReceipt=true;listValue={records:[summary(a)],truncated:false};app.state.selected=a;await app.refresh();assert.match(ids.rows.textContent,/股票日线/);assert.match(ids.rows.textContent,/接口限流/);assert.match(ids.rows.textContent,/域名解析失败/);stockReceipt=false;
  badList=true;await app.refresh();assert.equal(ids.rows.children.length,0);assert.equal(ids.cards.children.length,0);assert.ok(ids.detail.classList.contains('hidden'));assert.match(ids.status.textContent,/旧详情已清空/);
  assert.doesNotMatch(html,/href=["']https?:|src=["']https?:/);assert.match(html,/不是当前行情延迟|并非当前行情延迟/);assert.match(html,/不向供应商发请求/);
  process.stdout.write('PASS: Chinese saved-source history, no network-trigger UI, bounded validated lists, stale snapshots, false-admission gates, direct IDs and failure clearing\n');
