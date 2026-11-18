@@ -1,0 +1,14 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.db
+*.db-shm
+*.db-wal
+trading-lab-restored-*.sqlite3
+frontend/node_modules/
+frontend/dist/
+.DS_Store
