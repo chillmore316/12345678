@@ -46,6 +46,31 @@ export interface AccountCreatePayload {
   stock_transfer_fee_rate?: number;
 }
 
+export interface TrainingSession {
+  id: number | string;
+  account_id: number | string;
+  name: string;
+  symbol: string;
+  start_date: string;
+  max_date: string;
+  cursor_date: string | null;
+  status: 'active' | 'finished';
+  parent_id?: number | string | null;
+  [key: string]: unknown;
+}
+
+export interface TrainingSessionCreatePayload {
+  name: string;
+  symbol: string;
+  start_date: string;
+  initial_cash: number;
+  request_id: string;
+}
+
+export interface TrainingMutationPayload {
+  request_id: string;
+}
+
 export interface Position {
   symbol: string;
   quantity?: Numeric;
@@ -138,6 +163,7 @@ export interface AccountDetail extends AccountSummary {
 
 export interface Review {
   date: string;
+  account_id?: number | string | null;
   answers?: string[];
   tags?: string[];
   completed?: boolean;
@@ -148,6 +174,7 @@ export interface Review {
 
 export interface TradingPlan {
   id?: number | string;
+  account_id?: number | string | null;
   symbol: string;
   strategy: string;
   market_trend: string;

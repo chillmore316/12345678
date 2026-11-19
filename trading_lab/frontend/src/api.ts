@@ -12,15 +12,20 @@ import type {
   Review,
   ReviewPayload,
   TradingPlan,
+  TrainingMutationPayload,
+  TrainingSession,
+  TrainingSessionCreatePayload,
 } from './types';
 
 export class ApiError extends Error {
   status: number;
+  code: string;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code = '') {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -37,13 +42,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!response.ok) {
     let detail = '';
+    let code = '';
     try {
-      const body = await response.json() as { detail?: unknown; message?: unknown };
+      const body = await response.json() as { detail?: unknown; message?: unknown; code?: unknown };
       detail = String(body.detail ?? body.message ?? '');
+      code = String(body.code ?? '');
     } catch {
       detail = await response.text().catch(() => '');
     }
-    throw new ApiError(detail || `请求失败（${response.status}）`, response.status);
+    throw new ApiError(detail || `请求失败（${response.status}）`, response.status, code);
   }
   if (response.status === 204) return undefined as T;
   const contentType = response.headers.get('content-type') ?? '';
@@ -75,17 +82,47 @@ export const api = {
   placeOrder: (id: number | string, body: OrderPayload) => request<AccountDetail>(`/accounts/${encodeURIComponent(id)}/orders`, json(body)),
   cancelOrder: (id: number | string, orderId: number | string) =>
     request<AccountDetail>(`/accounts/${encodeURIComponent(id)}/orders/${encodeURIComponent(orderId)}/cancel`, { method: 'POST' }),
-  advanceAccount: (id: number | string, request_id: string) =>
-    request<AccountDetail>(`/accounts/${encodeURIComponent(id)}/advance`, json({ request_id })),
+  advanceAccount: (id: number | string, request_id: string, expected_cursor?: string | null) =>
+    request<AccountDetail>(`/accounts/${encodeURIComponent(id)}/advance`, json({ request_id, ...(expected_cursor !== undefined ? { expected_cursor } : {}) })),
   accountStats: (id: number | string) => request<AccountStats>(`/accounts/${encodeURIComponent(id)}/stats`),
-  reviews: (search = '') => request<Review[]>(`/reviews?search=${encodeURIComponent(search)}`),
-  saveReview: (date: string, body: ReviewPayload, keepalive = false) => request<Review>(`/reviews/${encodeURIComponent(date)}`, { method: 'PUT', body: JSON.stringify(body), keepalive }),
-  deleteReview: (date: string) => request<void>(`/reviews/${encodeURIComponent(date)}`, { method: 'DELETE' }),
-  plans: () => request<TradingPlan[]>('/plans'),
-  createPlan: (body: PlanPayload) => request<TradingPlan>('/plans', json(body)),
-  updatePlan: (id: number | string, body: Partial<PlanPayload>) => request<TradingPlan>(`/plans/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) }),
-  deletePlan: (id: number | string) => request<void>(`/plans/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  planHistory: (id: number | string) => request<PlanHistory[]>(`/plans/${encodeURIComponent(id)}/history`),
+  trainingSessions: () => request<TrainingSession[]>('/training-sessions'),
+  createTrainingSession: (body: TrainingSessionCreatePayload) => request<TrainingSession>('/training-sessions', json(body)),
+  trainingSession: (id: number | string) => request<TrainingSession>(`/training-sessions/${encodeURIComponent(id)}`),
+  restartTrainingSession: (id: number | string, body: TrainingMutationPayload) => request<TrainingSession>(`/training-sessions/${encodeURIComponent(id)}/restart`, json(body)),
+  finishTrainingSession: (id: number | string, body: TrainingMutationPayload) => request<TrainingSession>(`/training-sessions/${encodeURIComponent(id)}/finish`, json(body)),
+  reviews: (search = '', accountId?: number | string | null) => {
+    const query = new URLSearchParams({ search });
+    if (accountId !== undefined && accountId !== null) query.set('account_id', String(accountId));
+    return request<Review[]>(`/reviews?${query.toString()}`);
+  },
+  saveReview: (date: string, body: ReviewPayload, keepalive = false, accountId?: number | string | null) => {
+    const query = accountId === undefined || accountId === null ? '' : `?account_id=${encodeURIComponent(String(accountId))}`;
+    return request<Review>(`/reviews/${encodeURIComponent(date)}${query}`, { method: 'PUT', body: JSON.stringify(body), keepalive });
+  },
+  deleteReview: (date: string, accountId?: number | string | null) => {
+    const query = accountId === undefined || accountId === null ? '' : `?account_id=${encodeURIComponent(String(accountId))}`;
+    return request<void>(`/reviews/${encodeURIComponent(date)}${query}`, { method: 'DELETE' });
+  },
+  plans: (accountId?: number | string | null) => {
+    const query = accountId === undefined || accountId === null ? '' : `?account_id=${encodeURIComponent(String(accountId))}`;
+    return request<TradingPlan[]>(`/plans${query}`);
+  },
+  createPlan: (body: PlanPayload, accountId?: number | string | null) => {
+    const query = accountId === undefined || accountId === null ? '' : `?account_id=${encodeURIComponent(String(accountId))}`;
+    return request<TradingPlan>(`/plans${query}`, json(body));
+  },
+  updatePlan: (id: number | string, body: Partial<PlanPayload>, accountId?: number | string | null) => {
+    const query = accountId === undefined || accountId === null ? '' : `?account_id=${encodeURIComponent(String(accountId))}`;
+    return request<TradingPlan>(`/plans/${encodeURIComponent(id)}${query}`, { method: 'PUT', body: JSON.stringify(body) });
+  },
+  deletePlan: (id: number | string, accountId?: number | string | null) => {
+    const query = accountId === undefined || accountId === null ? '' : `?account_id=${encodeURIComponent(String(accountId))}`;
+    return request<void>(`/plans/${encodeURIComponent(id)}${query}`, { method: 'DELETE' });
+  },
+  planHistory: (id: number | string, accountId?: number | string | null) => {
+    const query = accountId === undefined || accountId === null ? '' : `?account_id=${encodeURIComponent(String(accountId))}`;
+    return request<PlanHistory[]>(`/plans/${encodeURIComponent(id)}/history${query}`);
+  },
   backup: () => fetchDownload('/backup'),
   exportFills: (accountId: number | string) => fetchDownload(`/export/fills.csv?account_id=${encodeURIComponent(accountId)}`),
   restore: (backup: unknown) => request<{ restored?: boolean; message?: string }>('/restore', json({ backup })),

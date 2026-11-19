@@ -27,6 +27,10 @@ STRATEGY_DEFAULT = {
 }
 
 
+class TrainingSessionFinishedError(RuntimeError):
+    """A scoped journal write targeted a finished training session."""
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -106,6 +110,42 @@ class JournalStore:
                     name TEXT NOT NULL, version TEXT NOT NULL,
                     content_json TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS lab_training_reviews (
+                    session_id INTEGER NOT NULL REFERENCES lab_training_sessions(id),
+                    date TEXT NOT NULL, revision INTEGER NOT NULL,
+                    answers_json TEXT NOT NULL, tags_json TEXT NOT NULL,
+                    completed INTEGER NOT NULL, deleted INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(session_id,date)
+                );
+                CREATE TABLE IF NOT EXISTS lab_training_review_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id INTEGER NOT NULL REFERENCES lab_training_sessions(id),
+                    date TEXT NOT NULL, revision INTEGER NOT NULL,
+                    event TEXT NOT NULL, content_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS lab_training_review_history_date
+                    ON lab_training_review_history(session_id,date,id);
+                CREATE TABLE IF NOT EXISTS lab_training_plans (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id INTEGER NOT NULL REFERENCES lab_training_sessions(id),
+                    symbol TEXT NOT NULL, strategy TEXT NOT NULL,
+                    status TEXT NOT NULL, revision INTEGER NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0,
+                    content_json TEXT NOT NULL, created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS lab_training_plans_scope
+                    ON lab_training_plans(session_id,deleted,status,id);
+                CREATE TABLE IF NOT EXISTS lab_training_plan_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    plan_id INTEGER NOT NULL REFERENCES lab_training_plans(id),
+                    revision INTEGER NOT NULL, event TEXT NOT NULL, detail TEXT NOT NULL,
+                    content_json TEXT NOT NULL, created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS lab_training_plan_history_plan
+                    ON lab_training_plan_history(plan_id,id);
             """)
             row = db.execute("SELECT 1 FROM lab_strategy WHERE id=1").fetchone()
             if row is None:
@@ -300,5 +340,317 @@ class JournalStore:
                 "detail": row["detail"], "created_at": row["created_at"],
                 "snapshot": content,
             })
+        return result
+
+    @staticmethod
+    def _training_session_writable(db: sqlite3.Connection, session_id: int) -> sqlite3.Row:
+        row = db.execute(
+            "SELECT status,cursor_date FROM lab_training_sessions WHERE id=?", (session_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError("历史回放训练不存在。")
+        if row["status"] != "active":
+            raise TrainingSessionFinishedError("历史回放训练已结束，不能再修改计划或复盘。")
+        return row
+
+    def save_training_review(
+        self, session_id: int, review_date: str, answers: list[str], tags: list[str], completed: bool,
+    ) -> dict[str, Any]:
+        day = _iso_date(review_date)
+        now = _utc_now()
+        with self._connection(write=True) as db:
+            session = self._training_session_writable(db, session_id)
+            if day > session["cursor_date"]:
+                raise ValueError("复盘日期不能晚于训练当前进度。")
+            old = db.execute(
+                "SELECT * FROM lab_training_reviews WHERE session_id=? AND date=?",
+                (session_id, day),
+            ).fetchone()
+            revision = int(old["revision"]) + 1 if old else 1
+            content = {
+                "date": day, "answers": list(answers), "tags": list(tags),
+                "completed": bool(completed), "revision": revision,
+                "deleted": False, "updated_at": now,
+            }
+            db.execute(
+                "INSERT INTO lab_training_reviews(session_id,date,revision,answers_json,tags_json,completed,deleted,updated_at) "
+                "VALUES(?,?,?,?,?,?,0,?) ON CONFLICT(session_id,date) DO UPDATE SET "
+                "revision=excluded.revision,answers_json=excluded.answers_json,tags_json=excluded.tags_json,"
+                "completed=excluded.completed,deleted=0,updated_at=excluded.updated_at",
+                (session_id, day, revision, _json(answers), _json(tags), int(completed), now),
+            )
+            db.execute(
+                "INSERT INTO lab_training_review_history(session_id,date,revision,event,content_json,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (session_id, day, revision, "saved" if old else "created", _json(content), now),
+            )
+        return content
+
+    def training_review(
+        self, session_id: int, review_date: str, include_deleted: bool = False,
+    ) -> dict[str, Any] | None:
+        day = _iso_date(review_date)
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM lab_training_reviews WHERE session_id=? AND date=?",
+                (session_id, day),
+            ).fetchone()
+        if row is None or (row["deleted"] and not include_deleted):
+            return None
+        return {
+            "date": day, "answers": json.loads(row["answers_json"]),
+            "tags": json.loads(row["tags_json"]), "completed": bool(row["completed"]),
+            "revision": int(row["revision"]), "updated_at": row["updated_at"],
+            "deleted": bool(row["deleted"]),
+        }
+
+    def training_reviews(self, session_id: int, search: str = "") -> list[dict[str, Any]]:
+        with self._connection() as db:
+            dates = db.execute(
+                "SELECT date FROM lab_training_reviews WHERE session_id=? AND deleted=0 ORDER BY date DESC",
+                (session_id,),
+            ).fetchall()
+        query = search.strip().casefold()
+        results = []
+        for row in dates:
+            item = self.training_review(session_id, row["date"])
+            if item and (not query or query in item["date"].casefold()
+                         or any(query in answer.casefold() for answer in item["answers"])
+                         or any(query in tag.casefold() for tag in item["tags"])):
+                results.append(item)
+        return results
+
+    def delete_training_review(self, session_id: int, review_date: str) -> dict[str, Any] | None:
+        day = _iso_date(review_date)
+        now = _utc_now()
+        with self._connection(write=True) as db:
+            self._training_session_writable(db, session_id)
+            old = db.execute(
+                "SELECT * FROM lab_training_reviews WHERE session_id=? AND date=? AND deleted=0",
+                (session_id, day),
+            ).fetchone()
+            if old is None:
+                return None
+            revision = int(old["revision"]) + 1
+            content = {
+                "date": day, "answers": json.loads(old["answers_json"]),
+                "tags": json.loads(old["tags_json"]), "completed": bool(old["completed"]),
+                "revision": revision, "deleted": True, "updated_at": now,
+            }
+            db.execute(
+                "UPDATE lab_training_reviews SET revision=?,deleted=1,updated_at=? WHERE session_id=? AND date=?",
+                (revision, now, session_id, day),
+            )
+            db.execute(
+                "INSERT INTO lab_training_review_history(session_id,date,revision,event,content_json,created_at) "
+                "VALUES(?,?,?,'deleted',?,?)", (session_id, day, revision, _json(content), now),
+            )
+        return content
+
+    def training_review_history(self, session_id: int, review_date: str) -> list[dict[str, Any]]:
+        day = _iso_date(review_date)
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT id,session_id,date,revision,event,content_json,created_at "
+                "FROM lab_training_review_history WHERE session_id=? AND date=? ORDER BY id DESC",
+                (session_id, day),
+            ).fetchall()
+        return [{"id": int(row["id"]), "session_id": int(row["session_id"]),
+                 "date": row["date"], "revision": int(row["revision"]),
+                 "event": row["event"], "created_at": row["created_at"],
+                 **json.loads(row["content_json"])} for row in rows]
+
+    @staticmethod
+    def _training_plan_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        content = json.loads(row["content_json"])
+        content.update({"id": int(row["id"]), "revision": int(row["revision"]),
+                        "created_at": row["created_at"], "updated_at": row["updated_at"]})
+        return content
+
+    def create_training_plan(self, session_id: int, values: Mapping[str, Any]) -> dict[str, Any]:
+        now = _utc_now()
+        with self._connection(write=True) as db:
+            session = self._training_session_writable(db, session_id)
+            content = dict(values)
+            content.update({"revision": 1, "deleted": False, "decision_date": session["cursor_date"],
+                            "created_at": now, "updated_at": now})
+            cur = db.execute(
+                "INSERT INTO lab_training_plans(session_id,symbol,strategy,status,revision,deleted,content_json,created_at,updated_at) "
+                "VALUES(?,?,?,?,1,0,?,?,?)",
+                (session_id, content["symbol"], content["strategy"], content["status"], _json(content), now, now),
+            )
+            plan_id = int(cur.lastrowid)
+            content["id"] = plan_id
+            db.execute("UPDATE lab_training_plans SET content_json=? WHERE id=?", (_json(content), plan_id))
+            db.execute(
+                "INSERT INTO lab_training_plan_history(plan_id,revision,event,detail,content_json,created_at) "
+                "VALUES(?,1,'created','用户创建计划',?,?)", (plan_id, _json(content), now),
+            )
+        return content
+
+    def training_plan(
+        self, session_id: int, plan_id: int, include_deleted: bool = False,
+    ) -> dict[str, Any] | None:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM lab_training_plans WHERE id=? AND session_id=?",
+                (plan_id, session_id),
+            ).fetchone()
+        if row is None or (row["deleted"] and not include_deleted):
+            return None
+        return self._training_plan_from_row(row)
+
+    def training_plans(self, session_id: int) -> list[dict[str, Any]]:
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT * FROM lab_training_plans WHERE session_id=? AND deleted=0 ORDER BY id DESC",
+                (session_id,),
+            ).fetchall()
+        return [self._training_plan_from_row(row) for row in rows]
+
+    def update_training_plan(
+        self, session_id: int, plan_id: int, values: Mapping[str, Any], detail: str = "用户修改计划",
+    ) -> dict[str, Any] | None:
+        now = _utc_now()
+        with self._connection(write=True) as db:
+            session = self._training_session_writable(db, session_id)
+            row = db.execute(
+                "SELECT * FROM lab_training_plans WHERE id=? AND session_id=? AND deleted=0",
+                (plan_id, session_id),
+            ).fetchone()
+            if row is None:
+                return None
+            content = json.loads(row["content_json"])
+            content.update(dict(values))
+            revision = int(row["revision"]) + 1
+            content.update({"revision": revision, "deleted": False,
+                            "decision_date": session["cursor_date"], "updated_at": now})
+            db.execute(
+                "UPDATE lab_training_plans SET symbol=?,strategy=?,status=?,revision=?,content_json=?,updated_at=? WHERE id=?",
+                (content["symbol"], content["strategy"], content["status"], revision,
+                 _json(content), now, plan_id),
+            )
+            db.execute(
+                "INSERT INTO lab_training_plan_history(plan_id,revision,event,detail,content_json,created_at) "
+                "VALUES(?,?, 'updated',?,?,?)", (plan_id, revision, detail, _json(content), now),
+            )
+        return content
+
+    def set_training_plan_status(
+        self, session_id: int, plan_id: int, status: str, detail: str,
+    ) -> dict[str, Any] | None:
+        current = self.training_plan(session_id, plan_id)
+        if current is None or current["status"] == status:
+            return current
+        return self.update_training_plan(session_id, plan_id, {"status": status}, detail=detail)
+
+    def record_training_fill_plan_updates(
+        self,
+        db: sqlite3.Connection,
+        session_id: int,
+        account_id: int,
+        fills: list[Mapping[str, Any]],
+    ) -> None:
+        """Apply linked-plan status/history changes inside the ledger transaction."""
+        session = self._training_session_writable(db, session_id)
+        cycles = db.execute(
+            "SELECT id,plan_id,status FROM cycles WHERE account_id=? ORDER BY id",
+            (account_id,),
+        ).fetchall()
+        affected: set[int] = set()
+        for fill in fills:
+            snapshot = fill.get("plan_snapshot")
+            raw_id = snapshot.get("plan_id") if isinstance(snapshot, Mapping) else None
+            if raw_id is not None:
+                try:
+                    affected.add(int(raw_id))
+                except (TypeError, ValueError):
+                    pass
+            cycle_id = fill.get("cycle_id")
+            for cycle in cycles:
+                if cycle["id"] == cycle_id and cycle["plan_id"] is not None:
+                    try:
+                        affected.add(int(cycle["plan_id"]))
+                    except (TypeError, ValueError):
+                        pass
+
+        now = _utc_now()
+        detail = "实际模拟成交后自动更新；不代表计划纪律已验证"
+        for plan_id in affected:
+            row = db.execute(
+                "SELECT * FROM lab_training_plans "
+                "WHERE id=? AND session_id=? AND deleted=0",
+                (plan_id, session_id),
+            ).fetchone()
+            if row is None:
+                continue
+            related = [cycle for cycle in cycles
+                       if str(cycle["plan_id"]) == str(plan_id)]
+            if any(cycle["status"] == "open" for cycle in related):
+                status = "active"
+            elif any(cycle["status"] == "closed" for cycle in related):
+                status = "completed"
+            else:
+                continue
+            if row["status"] == status:
+                continue
+
+            revision = int(row["revision"]) + 1
+            content = json.loads(row["content_json"])
+            content.update({
+                "status": status,
+                "revision": revision,
+                "deleted": False,
+                "decision_date": session["cursor_date"],
+                "updated_at": now,
+            })
+            encoded = _json(content)
+            db.execute(
+                "UPDATE lab_training_plans SET status=?,revision=?,content_json=?,updated_at=? "
+                "WHERE id=? AND session_id=?",
+                (status, revision, encoded, now, plan_id, session_id),
+            )
+            db.execute(
+                "INSERT INTO lab_training_plan_history(plan_id,revision,event,detail,content_json,created_at) "
+                "VALUES(?,?,'updated',?,?,?)",
+                (plan_id, revision, detail, encoded, now),
+            )
+
+    def delete_training_plan(self, session_id: int, plan_id: int) -> dict[str, Any] | None:
+        now = _utc_now()
+        with self._connection(write=True) as db:
+            session = self._training_session_writable(db, session_id)
+            row = db.execute(
+                "SELECT * FROM lab_training_plans WHERE id=? AND session_id=? AND deleted=0",
+                (plan_id, session_id),
+            ).fetchone()
+            if row is None:
+                return None
+            content = json.loads(row["content_json"])
+            revision = int(row["revision"]) + 1
+            content.update({"revision": revision, "deleted": True,
+                            "decision_date": session["cursor_date"], "updated_at": now})
+            db.execute("UPDATE lab_training_plans SET revision=?,deleted=1,content_json=?,updated_at=? WHERE id=?",
+                       (revision, _json(content), now, plan_id))
+            db.execute(
+                "INSERT INTO lab_training_plan_history(plan_id,revision,event,detail,content_json,created_at) "
+                "VALUES(?,?,'deleted','用户删除计划',?,?)", (plan_id, revision, _json(content), now),
+            )
+        return content
+
+    def training_plan_history(self, session_id: int, plan_id: int) -> list[dict[str, Any]]:
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT h.id,h.plan_id,h.revision,h.event,h.detail,h.content_json,h.created_at "
+                "FROM lab_training_plan_history h JOIN lab_training_plans p ON p.id=h.plan_id "
+                "WHERE h.plan_id=? AND p.session_id=? ORDER BY h.id DESC", (plan_id, session_id),
+            ).fetchall()
+        result = []
+        for row in rows:
+            content = json.loads(row["content_json"])
+            result.append({**content, "id": int(row["id"]), "plan_id": int(row["plan_id"]),
+                           "revision": int(row["revision"]), "event": row["event"],
+                           "detail": row["detail"], "created_at": row["created_at"],
+                           "snapshot": content})
         return result
 

@@ -43,6 +43,14 @@ class AlreadyAdvancedError(LedgerError):
     """The ledger has already advanced through the requested date."""
 
 
+class StaleCursorError(LedgerError):
+    """A training action was based on an account cursor that has changed."""
+
+
+class FinishedTrainingError(LedgerError):
+    """A training account has been finalized and can no longer be mutated."""
+
+
 class RiskLimitError(LedgerError):
     """A requested order exceeds the configured training risk guard."""
 
@@ -320,6 +328,25 @@ class Ledger:
         if row is None:
             raise NotFoundError(f"account {account_id} not found")
         return row
+
+    @staticmethod
+    def _assert_training_active(conn: sqlite3.Connection, account_id: int) -> None:
+        """Fail closed for training-session writes after the session is finished.
+
+        Legacy accounts have no row in ``lab_training_sessions`` and retain their
+        existing behavior. The check runs inside each ledger write transaction,
+        so order, cancel, advance, and finish serialize through SQLite.
+        """
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='lab_training_sessions'"
+        ).fetchone()
+        if table is None:
+            return
+        session = conn.execute(
+            "SELECT status FROM lab_training_sessions WHERE account_id=?", (account_id,)
+        ).fetchone()
+        if session is not None and session["status"] != "active":
+            raise FinishedTrainingError("历史回放训练已结束，不能再修改账户。")
 
     @staticmethod
     def _check_symbol(symbol: str) -> str:
@@ -684,6 +711,7 @@ class Ledger:
             existing = self._idempotent_result(conn, account_id, "order", request_id, payload)
             if existing is not None:
                 return existing
+            self._assert_training_active(conn, account_id)
             settings = json.loads(account["settings_json"])
             current_dd = self._current_drawdown(conn, account_id)
             if side == "BUY" and current_dd is not None and current_dd >= Decimal("0.05"):
@@ -820,6 +848,7 @@ class Ledger:
     def cancel(self, account_id: int, order_id: int) -> dict[str, Any]:
         with self._transaction() as conn:
             self._check_account(conn, account_id)
+            self._assert_training_active(conn, account_id)
             row = conn.execute(
                 "SELECT * FROM orders WHERE id = ? AND account_id = ?", (order_id, account_id)
             ).fetchone()
@@ -973,8 +1002,12 @@ class Ledger:
         date: str | Date,
         bars: Mapping[str, Mapping[str, Any]],
         request_id: str | None = None,
+        expected_cursor: str | Date | None = None,
+        on_advanced: Callable[[sqlite3.Connection, Mapping[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
+        """Advance one account; trusted callbacks run before commit for new advances only."""
         day = _date(date)
+        expected = _date(expected_cursor, "expected_cursor") if expected_cursor is not None else None
         if not isinstance(bars, Mapping):
             raise LedgerError("bars must map symbols to raw execution bars")
         normalized_bars: dict[str, Mapping[str, Any]] = {}
@@ -984,12 +1017,19 @@ class Ledger:
         if request_id == "":
             request_id = None
         payload = {"date": day, "bars": normalized_bars}
+        if expected is not None:
+            payload["expected_cursor"] = expected
         with self._transaction() as conn:
             account = self._check_account(conn, account_id)
             existing = self._idempotent_result(conn, account_id, "advance", request_id, payload)
             if existing is not None:
                 return existing
+            self._assert_training_active(conn, account_id)
             previous_cursor = account["cursor_date"]
+            if expected is not None and previous_cursor != expected:
+                raise StaleCursorError(
+                    f"训练进度已变化：expected_cursor={expected}, 当前进度={previous_cursor}。"
+                )
             if day <= previous_cursor:
                 raise AlreadyAdvancedError(
                     f"advance date {day} must be strictly after cursor {previous_cursor}"
@@ -1152,6 +1192,14 @@ class Ledger:
                 if reason:
                     reasons[order_id] = reason
             conn.execute("UPDATE accounts SET cursor_date = ? WHERE id = ?", (day, account_id))
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='lab_training_sessions'"
+            ).fetchone():
+                conn.execute(
+                    "UPDATE lab_training_sessions SET cursor_date=?,updated_at=? "
+                    "WHERE account_id=? AND status='active'",
+                    (day, Date.today().isoformat(), account_id),
+                )
             stale_symbols = self._update_marks_and_curve(conn, account_id, day, normalized_bars,
                                                          fills_today)
             summary = self._account_summary(conn, account_id)
@@ -1171,6 +1219,8 @@ class Ledger:
                 "equity": summary["equity"],
                 "warnings": warnings,
             }
+            if on_advanced is not None:
+                on_advanced(conn, result)
             self._save_idempotent(conn, account_id, "advance", request_id, payload, result)
             return result
 

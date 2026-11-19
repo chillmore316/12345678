@@ -27,14 +27,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .journal import JournalStore
+from .journal import JournalStore, TrainingSessionFinishedError
 from .ledger import (
     AlreadyAdvancedError,
+    FinishedTrainingError,
     IdempotencyConflict,
     Ledger,
     LedgerError,
     NotFoundError,
     RiskLimitError,
+    StaleCursorError,
 )
 from .market import MarketService
 
@@ -61,11 +63,19 @@ BACKUP_TABLES = (
     "market_provider_state", "market_request_clock", "market_sync_state",
     "lab_account_market", "lab_reviews", "lab_review_history", "lab_plans",
     "lab_plan_history", "lab_strategy", "lab_observations", "lab_profile_import_state",
-    "lab_account_creates",
+    "lab_account_creates", "lab_training_sessions", "lab_training_requests",
+    "lab_training_reviews", "lab_training_review_history", "lab_training_plans",
+    "lab_training_plan_history",
 )
-OPTIONAL_BACKUP_TABLES = {"lab_account_creates"}
+OPTIONAL_BACKUP_TABLES = {
+    "lab_account_creates", "lab_training_sessions", "lab_training_requests",
+    "lab_training_reviews", "lab_training_review_history", "lab_training_plans",
+    "lab_training_plan_history",
+}
 INSERT_ORDER = (
-    "accounts", "market_datasets", "market_calendar", "market_provider_state",
+    "accounts", "lab_training_sessions", "lab_training_requests",
+    "lab_training_reviews", "lab_training_review_history", "lab_training_plans",
+    "lab_training_plan_history", "market_datasets", "market_calendar", "market_provider_state",
     "market_request_clock", "market_sync_state", "market_bars", "market_current",
     "lab_reviews", "lab_review_history", "lab_plans", "lab_plan_history", "lab_strategy",
     "lab_observations", "lab_profile_import_state", "lab_account_creates", "lab_account_market",
@@ -197,6 +207,10 @@ def _profile_observations(path: Path | None, symbols: list[dict[str, Any]]) -> l
 
 
 def _ledger_error_message(exc: LedgerError) -> tuple[int, str]:
+    if isinstance(exc, StaleCursorError):
+        return 409, "本次推进未提交，请刷新训练进度"
+    if isinstance(exc, FinishedTrainingError):
+        return 409, "历史回放训练已结束，不能再修改账户。"
     if isinstance(exc, NotFoundError):
         return 404, "账户、委托或计划不存在。"
     if isinstance(exc, IdempotencyConflict):
@@ -275,6 +289,57 @@ class OrderInput(InputModel):
 
 class AdvanceInput(InputModel):
     request_id: str = Field(min_length=1, max_length=128)
+    expected_cursor: str | None = None
+
+    @field_validator("expected_cursor")
+    @classmethod
+    def valid_expected_cursor(cls, value: str | None) -> str | None:
+        return _date(value) if value is not None else None
+
+    @field_validator("request_id")
+    @classmethod
+    def nonblank_request_id(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("请求编号不能为空")
+        return value.strip()
+
+
+class TrainingSessionCreate(InputModel):
+    name: str = Field(min_length=1, max_length=80)
+    symbol: str
+    start_date: str
+    initial_cash: float = Field(gt=0, le=1_000_000_000_000)
+    request_id: str = Field(min_length=1, max_length=128)
+
+    @field_validator("name", "request_id")
+    @classmethod
+    def nonblank_training_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("名称和请求编号不能为空")
+        return value.strip()
+
+    @field_validator("symbol")
+    @classmethod
+    def training_symbol(cls, value: str) -> str:
+        if value not in TRADE_SYMBOLS:
+            raise ValueError("历史回放训练仅支持已配置的交易标的。")
+        return value
+
+    @field_validator("start_date")
+    @classmethod
+    def valid_training_date(cls, value: str) -> str:
+        return _date(value)
+
+
+class TrainingRequest(InputModel):
+    request_id: str = Field(min_length=1, max_length=128)
+
+    @field_validator("request_id")
+    @classmethod
+    def nonblank_training_request_id(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("请求编号不能为空")
+        return value.strip()
 
 
 class MarketSyncInput(InputModel):
@@ -385,6 +450,29 @@ def _ensure_app_schema(db_path: str | Path) -> None:
             )
         """)
         conn.executescript("""
+            CREATE TABLE IF NOT EXISTS lab_training_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL UNIQUE REFERENCES accounts(id),
+                name TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                max_date TEXT NOT NULL,
+                cursor_date TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('active','finished')),
+                parent_id INTEGER REFERENCES lab_training_sessions(id),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS lab_training_sessions_status
+                ON lab_training_sessions(status,id);
+            CREATE TABLE IF NOT EXISTS lab_training_requests (
+                method TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                session_id INTEGER NOT NULL REFERENCES lab_training_sessions(id),
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(method,request_id)
+            );
             CREATE TABLE IF NOT EXISTS lab_observations (
                 symbol TEXT PRIMARY KEY, quantity TEXT NOT NULL,
                 reference_cost TEXT NOT NULL, note TEXT NOT NULL,
@@ -569,6 +657,123 @@ def _store_account_creation(
         )
 
 
+def _training_session_payload(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    result = {
+        "id": int(row["id"]),
+        "account_id": int(row["account_id"]),
+        "name": row["name"],
+        "symbol": row["symbol"],
+        "start_date": row["start_date"],
+        "max_date": row["max_date"],
+        "cursor_date": row["cursor_date"],
+        "status": row["status"],
+    }
+    if row["parent_id"] is not None:
+        result["parent_id"] = int(row["parent_id"])
+    return result
+
+
+def _training_session(db_path: str | Path, session_id: int) -> dict[str, Any] | None:
+    conn = _sqlite(db_path)
+    try:
+        row = conn.execute("SELECT * FROM lab_training_sessions WHERE id=?", (session_id,)).fetchone()
+        return _training_session_payload(row) if row else None
+    finally:
+        conn.close()
+
+
+def _training_session_for_account(db_path: str | Path, account_id: int) -> dict[str, Any] | None:
+    conn = _sqlite(db_path)
+    try:
+        row = conn.execute("SELECT * FROM lab_training_sessions WHERE account_id=?", (account_id,)).fetchone()
+        return _training_session_payload(row) if row else None
+    finally:
+        conn.close()
+
+
+def _training_sessions(db_path: str | Path) -> list[dict[str, Any]]:
+    conn = _sqlite(db_path)
+    try:
+        rows = conn.execute("SELECT * FROM lab_training_sessions ORDER BY id DESC").fetchall()
+        return [_training_session_payload(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def _training_request(db_path: str | Path, method: str, request_id: str) -> dict[str, Any] | None:
+    conn = _sqlite(db_path)
+    try:
+        row = conn.execute(
+            "SELECT fingerprint,session_id FROM lab_training_requests WHERE method=? AND request_id=?",
+            (method, request_id),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def _training_request_replay(
+    db_path: str | Path, method: str, request_id: str, fingerprint: str,
+) -> dict[str, Any] | None:
+    previous = _training_request(db_path, method, request_id)
+    if previous is None:
+        return None
+    if previous["fingerprint"] != fingerprint:
+        raise HTTPException(status_code=409, detail="请求编号已用于不同的训练操作。")
+    session = _training_session(db_path, int(previous["session_id"]))
+    if session is None:
+        raise HTTPException(status_code=500, detail="训练操作记录缺少关联会话。")
+    return session
+
+
+def _training_fingerprint(payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _training_create_request_key(method: str, request_id: str) -> str:
+    return f"training-{method}-" + hashlib.sha256(request_id.encode("utf-8")).hexdigest()
+
+
+def _record_training_request(
+    conn: sqlite3.Connection, method: str, request_id: str,
+    fingerprint: str, session_id: int,
+) -> None:
+    conn.execute(
+        "INSERT INTO lab_training_requests(method,request_id,fingerprint,session_id,created_at) "
+        "VALUES(?,?,?,?,?)",
+        (method, request_id, fingerprint, session_id, _now_iso()),
+    )
+
+
+def _store_training_session(
+    conn: sqlite3.Connection,
+    account_id: int,
+    snapshot: dict[str, Any],
+    name: str,
+    symbol: str,
+    parent_id: int | None,
+    method: str,
+    request_id: str,
+    fingerprint: str,
+) -> int:
+    internal_id = _training_create_request_key(method, request_id)
+    _store_account_creation(conn, account_id, snapshot, internal_id, fingerprint)
+    now = _now_iso()
+    cur = conn.execute(
+        "INSERT INTO lab_training_sessions(account_id,name,symbol,start_date,max_date,cursor_date,status,parent_id,created_at,updated_at) "
+        "VALUES(?,?,?,?,?,?,'active',?,?,?)",
+        (account_id, name, symbol, snapshot["start_date"], snapshot["max_date"],
+         snapshot["start_date"], parent_id, now, now),
+    )
+    session_id = int(cur.lastrowid)
+    conn.execute(
+        "INSERT INTO lab_training_requests(method,request_id,fingerprint,session_id,created_at) VALUES(?,?,?,?,?)",
+        (method, request_id, fingerprint, session_id, now),
+    )
+    return session_id
+
+
 def _account_create_fingerprint(body: AccountCreate) -> str:
     payload = body.model_dump(mode="json", exclude={"request_id"}, exclude_none=True)
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -613,7 +818,12 @@ def _same_numeric(left: Any, right: Any) -> bool:
         return False
 
 
-def _insert_history_after_fills(journal: JournalStore, account: dict[str, Any], fills: list[dict[str, Any]]) -> None:
+def _insert_history_after_fills(
+    journal: JournalStore,
+    account: dict[str, Any],
+    fills: list[dict[str, Any]],
+    training_session_id: int | None = None,
+) -> None:
     affected: set[int] = set()
     for fill in fills:
         snapshot = fill.get("plan_snapshot")
@@ -631,7 +841,8 @@ def _insert_history_after_fills(journal: JournalStore, account: dict[str, Any], 
                 except (TypeError, ValueError):
                     pass
     for plan_id in affected:
-        plan = journal.plan(plan_id)
+        plan = (journal.training_plan(training_session_id, plan_id)
+                if training_session_id is not None else journal.plan(plan_id))
         if plan is None:
             continue
         related = [cycle for cycle in account.get("cycles", []) if str(cycle.get("plan_id")) == str(plan_id)]
@@ -642,7 +853,13 @@ def _insert_history_after_fills(journal: JournalStore, account: dict[str, Any], 
         else:
             continue
         if plan.get("status") != status:
-            journal.set_plan_status(plan_id, status, "实际模拟成交后自动更新；不代表计划纪律已验证")
+            if training_session_id is not None:
+                journal.set_training_plan_status(
+                    training_session_id, plan_id, status,
+                    "实际模拟成交后自动更新；不代表计划纪律已验证",
+                )
+            else:
+                journal.set_plan_status(plan_id, status, "实际模拟成交后自动更新；不代表计划纪律已验证")
 
 
 def _csv_download(account: dict[str, Any], account_id: int) -> Response:
@@ -734,8 +951,25 @@ def create_app(
 
     @app.exception_handler(LedgerError)
     async def ledger_error_handler(request: Request, exc: LedgerError):
+        if isinstance(exc, StaleCursorError):
+            return JSONResponse(status_code=409, content={
+                "code": "training_stale_cursor",
+                "detail": "本次推进未提交，请刷新训练进度",
+            })
+        if isinstance(exc, FinishedTrainingError):
+            return JSONResponse(status_code=409, content={
+                "code": "training_finished",
+                "detail": "历史回放训练已结束，不能再修改账户。",
+            })
         status, message = _ledger_error_message(exc)
         return JSONResponse(status_code=status, content={"detail": message})
+
+    @app.exception_handler(TrainingSessionFinishedError)
+    async def training_journal_finished_handler(request: Request, exc: TrainingSessionFinishedError):
+        return JSONResponse(status_code=409, content={
+            "code": "training_finished",
+            "detail": "历史回放训练已结束，不能再修改计划或复盘。",
+        })
 
     @app.exception_handler(ValueError)
     async def value_error_handler(request: Request, exc: ValueError):
@@ -830,6 +1064,153 @@ def create_app(
     async def list_accounts():
         return _accounts_payload(ledger)
 
+    @app.get("/api/training-sessions")
+    async def list_training_sessions():
+        return _training_sessions(resolved_db)
+
+    @app.post("/api/training-sessions")
+    def create_training_session(body: TrainingSessionCreate):
+        if body.start_date > _today():
+            raise HTTPException(status_code=422, detail="开始日期不能晚于今天。")
+        fingerprint = _training_fingerprint(body.model_dump(mode="json", exclude={"request_id"}))
+        with app.state.mutation_lock:
+            previous = _training_request_replay(
+                resolved_db, "create", body.request_id, fingerprint,
+            )
+            if previous is not None:
+                return previous
+            snapshot = _freeze_market(market, resolved_db, body.start_date)
+            try:
+                created = ledger.create_account(
+                    name=body.name, initial_cash=body.initial_cash,
+                    start_date=body.start_date, mode="training",
+                    on_created=lambda conn, account_id: _store_training_session(
+                        conn, account_id, snapshot, body.name, body.symbol, None,
+                        "create", body.request_id, fingerprint,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                replay = _training_request_replay(
+                    resolved_db, "create", body.request_id, fingerprint,
+                )
+                if replay is None:
+                    raise
+                return replay
+            session = _training_session_for_account(resolved_db, int(created["id"]))
+            if session is None:
+                raise HTTPException(status_code=500, detail="训练会话创建记录缺失。")
+            return session
+
+    @app.get("/api/training-sessions/{session_id}")
+    async def get_training_session(session_id: int):
+        session = _training_session(resolved_db, session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="历史回放训练不存在。")
+        return session
+
+    @app.post("/api/training-sessions/{session_id}/restart")
+    def restart_training_session(session_id: int, body: TrainingRequest):
+        with app.state.mutation_lock:
+            original = _training_session(resolved_db, session_id)
+            if original is None:
+                raise HTTPException(status_code=404, detail="历史回放训练不存在。")
+            fingerprint = _training_fingerprint({"session_id": session_id})
+            previous = _training_request_replay(
+                resolved_db, "restart", body.request_id, fingerprint,
+            )
+            if previous is not None:
+                return previous
+            snapshot = _snapshot_for_account(resolved_db, int(original["account_id"]))
+            if snapshot is None:
+                raise HTTPException(status_code=500, detail="原训练缺少冻结行情快照。")
+            conn = _sqlite(resolved_db)
+            try:
+                account_row = conn.execute(
+                    "SELECT initial_cash,settings_json FROM accounts WHERE id=?",
+                    (original["account_id"],),
+                ).fetchone()
+            finally:
+                conn.close()
+            if account_row is None:
+                raise HTTPException(status_code=500, detail="原训练缺少关联账本。")
+            settings = json.loads(account_row["settings_json"])
+            try:
+                created = ledger.create_account(
+                    name=original["name"], initial_cash=account_row["initial_cash"],
+                    start_date=original["start_date"], mode="training", fees=settings,
+                    on_created=lambda conn, account_id: _store_training_session(
+                        conn, account_id, snapshot, original["name"], original["symbol"],
+                        session_id, "restart", body.request_id, fingerprint,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                replay = _training_request_replay(
+                    resolved_db, "restart", body.request_id, fingerprint,
+                )
+                if replay is None:
+                    raise
+                return replay
+            restarted = _training_session_for_account(resolved_db, int(created["id"]))
+            if restarted is None:
+                raise HTTPException(status_code=500, detail="重置训练会话记录缺失。")
+            return restarted
+
+    @app.post("/api/training-sessions/{session_id}/finish")
+    def finish_training_session(session_id: int, body: TrainingRequest):
+        fingerprint = _training_fingerprint({"session_id": session_id})
+        with app.state.mutation_lock:
+            conn = _sqlite(resolved_db)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM lab_training_sessions WHERE id=?", (session_id,),
+                ).fetchone()
+                if row is None:
+                    conn.rollback()
+                    raise HTTPException(status_code=404, detail="历史回放训练不存在。")
+                previous = conn.execute(
+                    "SELECT fingerprint,session_id FROM lab_training_requests "
+                    "WHERE method='finish' AND request_id=?", (body.request_id,),
+                ).fetchone()
+                if previous is not None:
+                    if previous["fingerprint"] != fingerprint:
+                        conn.rollback()
+                        raise HTTPException(status_code=409, detail="请求编号已用于不同的训练操作。")
+                    if int(previous["session_id"]) != session_id:
+                        conn.rollback()
+                        raise HTTPException(status_code=409, detail="请求编号已用于不同的训练会话。")
+                    conn.commit()
+                    return _training_session_payload(row)
+                if row["status"] == "active":
+                    pending = conn.execute(
+                        "SELECT COUNT(*) FROM orders WHERE account_id=? "
+                        "AND status IN ('pending','partially_filled')", (row["account_id"],),
+                    ).fetchone()[0]
+                    if pending:
+                        conn.rollback()
+                        return JSONResponse(status_code=409, content={
+                            "code": "training_pending_orders",
+                            "detail": "仍有未处理委托，请先处理或取消后再结束训练。",
+                        })
+                    conn.execute(
+                        "UPDATE lab_training_sessions SET status='finished',updated_at=? WHERE id=?",
+                        (_now_iso(), session_id),
+                    )
+                    row = conn.execute(
+                        "SELECT * FROM lab_training_sessions WHERE id=?", (session_id,),
+                    ).fetchone()
+                _record_training_request(conn, "finish", body.request_id, fingerprint, session_id)
+                payload = _training_session_payload(row)
+                conn.commit()
+                return payload
+            except HTTPException:
+                raise
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
     @app.post("/api/accounts")
     def create_account(body: AccountCreate):
         start = body.start_date
@@ -889,6 +1270,9 @@ def create_app(
     async def place_order(account_id: int, body: OrderInput):
         with app.state.mutation_lock:
             ledger.account(account_id)
+            training_session = _training_session_for_account(resolved_db, account_id)
+            if training_session is not None and body.symbol != training_session["symbol"]:
+                raise HTTPException(status_code=422, detail="委托标的与当前训练标的不一致。")
             conn = _sqlite(resolved_db)
             try:
                 previous = conn.execute(
@@ -920,7 +1304,8 @@ def create_app(
                     plan_id = int(body.plan_id)
                 except (TypeError, ValueError):
                     raise HTTPException(status_code=422, detail="计划编号无效。") from None
-                plan = journal.plan(plan_id)
+                plan = (journal.training_plan(training_session["id"], plan_id)
+                        if training_session is not None else journal.plan(plan_id))
                 if plan is None:
                     raise HTTPException(status_code=404, detail="关联的计划不存在。")
                 if plan["symbol"] != body.symbol:
@@ -950,7 +1335,10 @@ def create_app(
     @app.post("/api/accounts/{account_id}/advance")
     async def advance_account(account_id: int, body: AdvanceInput):
         with app.state.mutation_lock:
-            ledger.account(account_id)
+            training_account = ledger.account(account_id)
+            training_session = _training_session_for_account(resolved_db, account_id)
+            if training_session is not None and body.expected_cursor is None:
+                raise HTTPException(status_code=422, detail="历史回放训练推进必须提交 expected_cursor。")
             conn = _sqlite(resolved_db)
             try:
                 prior = conn.execute(
@@ -959,15 +1347,37 @@ def create_app(
                 ).fetchone()
             finally:
                 conn.close()
-            if prior is not None:
+            # Legacy account retries retain their prior behavior. Training retries
+            # are rebuilt from the request's expected cursor so the ledger can
+            # verify the same UUID payload before checking the now-stale cursor.
+            if prior is not None and training_session is None:
                 return _account_payload(ledger, account_id)
+            if (training_session is not None and training_session["status"] != "active"
+                    and prior is None):
+                raise FinishedTrainingError("历史回放训练已结束，不能再修改账户。")
             frozen = _snapshot_for_account(resolved_db, account_id)
             if frozen is None:
                 raise HTTPException(status_code=422, detail="账户没有可推进的冻结行情。")
-            account = ledger.account(account_id)
-            cursor = account["cursor_date"]
+            cursor = training_account["cursor_date"]
+            if training_session is not None:
+                assert body.expected_cursor is not None
+                if prior is None and body.expected_cursor != cursor:
+                    raise StaleCursorError(
+                        f"训练进度已变化：expected_cursor={body.expected_cursor}, 当前进度={cursor}。"
+                    )
+                if prior is not None:
+                    # The idempotency hash binds the expected cursor. Reconstruct
+                    # the original next bar so matching retries replay safely and
+                    # UUID reuse with changed input is rejected by Ledger.advance.
+                    cursor = body.expected_cursor
             if cursor < frozen["start_date"] or cursor >= frozen["max_date"]:
-                raise HTTPException(status_code=422, detail="账户已到冻结历史数据末日，无法继续推进。")
+                if training_session is not None and prior is not None:
+                    # A replay may refer to the last committed cursor. Its next
+                    # date remains in the frozen snapshot even though the live
+                    # account itself is already at that date.
+                    pass
+                else:
+                    raise HTTPException(status_code=422, detail="账户已到冻结历史数据末日，无法继续推进。")
             days = frozen["calendar_days"]
             calendar_map = {row["date"]: row for row in days}
             expected = (date.fromisoformat(frozen["max_date"]) - date.fromisoformat(frozen["start_date"])).days + 1
@@ -984,13 +1394,29 @@ def create_app(
                 if bar.get("previous_session_date") != cursor:
                     raise HTTPException(status_code=422, detail="冻结行情缺少紧邻上一交易日，账户未推进。")
                 held = any(pos.get("symbol") == symbol and (pos.get("quantity") or 0) > 0
-                           for pos in account.get("positions", []))
-                if held and bar.get("price_limits_consistent") is False:
+                           for pos in training_account.get("positions", []))
+                if prior is None and held and bar.get("price_limits_consistent") is False:
                     raise HTTPException(status_code=422, detail="持仓标的 OHLC 超出涨跌停范围，账户未推进。")
                 bars[symbol] = bar
-            result = ledger.advance(account_id, next_day, bars, request_id=body.request_id)
-            updated = _account_payload(ledger, account_id)
-            _insert_history_after_fills(journal, updated, result.get("fills", []))
+            on_advanced = None
+            if training_session is not None:
+                training_session_id = int(training_session["id"])
+
+                def record_training_fill_plans(conn: sqlite3.Connection, advanced: dict[str, Any]) -> None:
+                    journal.record_training_fill_plan_updates(
+                        conn, training_session_id, account_id, advanced.get("fills", []),
+                    )
+
+                on_advanced = record_training_fill_plans
+            result = ledger.advance(
+                account_id, next_day, bars, request_id=body.request_id,
+                expected_cursor=body.expected_cursor, on_advanced=on_advanced,
+            )
+            if prior is None and training_session is None:
+                updated = _account_payload(ledger, account_id)
+                _insert_history_after_fills(
+                    journal, updated, result.get("fills", []),
+                )
             return _account_payload(ledger, account_id)
 
     @app.get("/api/accounts/{account_id}/stats")
@@ -1015,55 +1441,147 @@ def create_app(
         return stats
 
     @app.get("/api/reviews")
-    async def list_reviews(search: str = Query(default="", max_length=200)):
-        return journal.reviews(search)
+    async def list_reviews(
+        search: str = Query(default="", max_length=200),
+        account_id: int | None = Query(default=None, gt=0),
+    ):
+        if account_id is None:
+            return journal.reviews(search)
+        ledger.account(account_id)
+        session = _training_session_for_account(resolved_db, account_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="该账户没有历史回放训练记录。")
+        return journal.training_reviews(session["id"], search)
 
     @app.put("/api/reviews/{review_date}")
-    async def save_review(review_date: str, body: ReviewInput):
+    async def save_review(
+        review_date: str, body: ReviewInput,
+        account_id: int | None = Query(default=None, gt=0),
+    ):
         day = _date(review_date)
-        if day > _today():
-            raise HTTPException(status_code=422, detail="不能保存未来日期的复盘。")
         if body.completed and any(not answer.strip() for answer in body.answers):
             raise HTTPException(status_code=422, detail="填写完 7 项内容后才能标记复盘完成。")
+        if account_id is not None:
+            ledger.account(account_id)
+            session = _training_session_for_account(resolved_db, account_id)
+            if session is None:
+                raise HTTPException(status_code=404, detail="该账户没有历史回放训练记录。")
+            if day < session["start_date"] or day > session["cursor_date"]:
+                raise HTTPException(status_code=422, detail="复盘日期须位于训练起点和当前进度之间。")
+            return journal.save_training_review(
+                session["id"], day, body.answers, body.tags, body.completed,
+            )
+        if day > _today():
+            raise HTTPException(status_code=422, detail="不能保存未来日期的复盘。")
         return journal.save_review(day, body.answers, body.tags, body.completed)
 
     @app.delete("/api/reviews/{review_date}", status_code=204)
-    async def delete_review(review_date: str):
-        result = journal.delete_review(_date(review_date))
+    async def delete_review(
+        review_date: str, account_id: int | None = Query(default=None, gt=0),
+    ):
+        day = _date(review_date)
+        if account_id is not None:
+            ledger.account(account_id)
+            session = _training_session_for_account(resolved_db, account_id)
+            if session is None:
+                raise HTTPException(status_code=404, detail="该账户没有历史回放训练记录。")
+            result = journal.delete_training_review(session["id"], day)
+        else:
+            result = journal.delete_review(day)
         if result is None:
             raise HTTPException(status_code=404, detail="复盘记录不存在。")
         return Response(status_code=204)
 
     @app.get("/api/reviews/{review_date}/history")
-    async def review_history(review_date: str):
-        return journal.review_history(_date(review_date))
+    async def review_history(
+        review_date: str, account_id: int | None = Query(default=None, gt=0),
+    ):
+        day = _date(review_date)
+        if account_id is None:
+            return journal.review_history(day)
+        ledger.account(account_id)
+        session = _training_session_for_account(resolved_db, account_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="该账户没有历史回放训练记录。")
+        return journal.training_review_history(session["id"], day)
 
     @app.get("/api/plans")
-    async def list_plans():
-        return journal.plans()
+    async def list_plans(account_id: int | None = Query(default=None, gt=0)):
+        if account_id is None:
+            return journal.plans()
+        ledger.account(account_id)
+        session = _training_session_for_account(resolved_db, account_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="该账户没有历史回放训练记录。")
+        return journal.training_plans(session["id"])
 
     @app.post("/api/plans")
-    async def create_plan(body: PlanInput):
+    async def create_plan(
+        body: PlanInput, account_id: int | None = Query(default=None, gt=0),
+    ):
+        if account_id is not None:
+            ledger.account(account_id)
+            session = _training_session_for_account(resolved_db, account_id)
+            if session is None:
+                raise HTTPException(status_code=404, detail="该账户没有历史回放训练记录。")
+            if body.symbol != session["symbol"]:
+                raise HTTPException(status_code=422, detail="计划标的与当前训练标的不一致。")
+            return journal.create_training_plan(session["id"], body.model_dump())
         return journal.create_plan(body.model_dump())
 
     @app.put("/api/plans/{plan_id}")
-    async def update_plan(plan_id: int, body: PlanInput):
-        updated = journal.update_plan(plan_id, body.model_dump())
+    async def update_plan(
+        plan_id: int, body: PlanInput,
+        account_id: int | None = Query(default=None, gt=0),
+    ):
+        session = None
+        if account_id is not None:
+            ledger.account(account_id)
+            session = _training_session_for_account(resolved_db, account_id)
+            if session is None:
+                raise HTTPException(status_code=404, detail="该账户没有历史回放训练记录。")
+            if body.symbol != session["symbol"]:
+                raise HTTPException(status_code=422, detail="计划标的与当前训练标的不一致。")
+            updated = journal.update_training_plan(session["id"], plan_id, body.model_dump())
+        else:
+            updated = journal.update_plan(plan_id, body.model_dump())
         if updated is None:
             raise HTTPException(status_code=404, detail="交易计划不存在。")
         return updated
 
     @app.delete("/api/plans/{plan_id}", status_code=204)
-    async def delete_plan(plan_id: int):
-        if journal.delete_plan(plan_id) is None:
+    async def delete_plan(
+        plan_id: int, account_id: int | None = Query(default=None, gt=0),
+    ):
+        if account_id is not None:
+            ledger.account(account_id)
+            session = _training_session_for_account(resolved_db, account_id)
+            if session is None:
+                raise HTTPException(status_code=404, detail="该账户没有历史回放训练记录。")
+            deleted = journal.delete_training_plan(session["id"], plan_id)
+        else:
+            deleted = journal.delete_plan(plan_id)
+        if deleted is None:
             raise HTTPException(status_code=404, detail="交易计划不存在。")
         return Response(status_code=204)
 
     @app.get("/api/plans/{plan_id}/history")
-    async def plan_history(plan_id: int):
-        if journal.plan(plan_id, include_deleted=True) is None:
+    async def plan_history(
+        plan_id: int, account_id: int | None = Query(default=None, gt=0),
+    ):
+        if account_id is not None:
+            ledger.account(account_id)
+            session = _training_session_for_account(resolved_db, account_id)
+            if session is None:
+                raise HTTPException(status_code=404, detail="该账户没有历史回放训练记录。")
+            plan = journal.training_plan(session["id"], plan_id, include_deleted=True)
+            history = journal.training_plan_history(session["id"], plan_id)
+        else:
+            plan = journal.plan(plan_id, include_deleted=True)
+            history = journal.plan_history(plan_id)
+        if plan is None:
             raise HTTPException(status_code=404, detail="交易计划不存在。")
-        return journal.plan_history(plan_id)
+        return history
 
     @app.get("/api/backup")
     async def export_backup():
@@ -1218,6 +1736,68 @@ def _check_restored_db(path: Path) -> None:
                     or not re.fullmatch(r"[0-9a-f]{64}", row["fingerprint"])
                     or row["snapshot_account_id"] != row["account_id"]):
                 raise ValueError("account create request")
+        sessions: dict[int, sqlite3.Row] = {}
+        for row in conn.execute("SELECT * FROM lab_training_sessions"):
+            session_id = int(row["id"])
+            account = conn.execute(
+                "SELECT mode,cursor_date FROM accounts WHERE id=?", (row["account_id"],),
+            ).fetchone()
+            market = conn.execute(
+                "SELECT start_date,max_date,checksum,snapshot_json FROM lab_account_market WHERE account_id=?",
+                (row["account_id"],),
+            ).fetchone()
+            if (account is None or account["mode"] != "training" or market is None
+                    or row["symbol"] not in TRADE_SYMBOLS
+                    or account["cursor_date"] != row["cursor_date"]
+                    or not row["start_date"] <= row["cursor_date"] <= row["max_date"]
+                    or market["start_date"] != row["start_date"]
+                    or market["max_date"] != row["max_date"]):
+                raise ValueError("training session/account mismatch")
+            if row["parent_id"] is not None:
+                parent = conn.execute(
+                    "SELECT 1 FROM lab_training_sessions WHERE id=?", (row["parent_id"],),
+                ).fetchone()
+                if parent is None or int(row["parent_id"]) == session_id:
+                    raise ValueError("training session parent")
+            snapshot = json.loads(market["snapshot_json"])
+            if (snapshot.get("start_date") != row["start_date"]
+                    or snapshot.get("max_date") != row["max_date"]):
+                raise ValueError("training session snapshot mismatch")
+            if row["status"] == "finished" and conn.execute(
+                "SELECT 1 FROM orders WHERE account_id=? AND status IN ('pending','partially_filled') LIMIT 1",
+                (row["account_id"],),
+            ).fetchone():
+                raise ValueError("finished training has pending orders")
+            sessions[session_id] = row
+        if conn.execute(
+            "SELECT 1 FROM accounts a LEFT JOIN lab_training_sessions s ON s.account_id=a.id "
+            "WHERE a.mode='training' AND s.id IS NULL LIMIT 1"
+        ).fetchone():
+            raise ValueError("training account enrollment")
+        for row in conn.execute(
+            "SELECT method,request_id,fingerprint,session_id FROM lab_training_requests"
+        ):
+            if (row["method"] not in {"create", "restart", "finish"}
+                    or not isinstance(row["request_id"], str) or not 1 <= len(row["request_id"]) <= 128
+                    or not re.fullmatch(r"[0-9a-f]{64}", row["fingerprint"])
+                    or int(row["session_id"]) not in sessions):
+                raise ValueError("training request")
+        for row in conn.execute(
+            "SELECT r.session_id,r.date,s.start_date,s.cursor_date FROM lab_training_reviews r "
+            "JOIN lab_training_sessions s ON s.id=r.session_id"
+        ):
+            if not row["start_date"] <= row["date"] <= row["cursor_date"]:
+                raise ValueError("training review date")
+        for row in conn.execute(
+            "SELECT p.session_id,p.symbol,p.content_json,s.symbol AS session_symbol,s.start_date,s.cursor_date "
+            "FROM lab_training_plans p JOIN lab_training_sessions s ON s.id=p.session_id"
+        ):
+            content = json.loads(row["content_json"])
+            if row["symbol"] != row["session_symbol"]:
+                raise ValueError("training plan symbol")
+            decision_date = content.get("decision_date")
+            if decision_date is not None and not row["start_date"] <= decision_date <= row["cursor_date"]:
+                raise ValueError("training plan decision date")
     finally:
         conn.close()
     Ledger(path).accounts()

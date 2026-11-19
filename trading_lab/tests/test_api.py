@@ -79,6 +79,15 @@ class TradingLabAPITests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
+    def create_training_session(self, *, request_id="training-create", symbol="603283.SH"):
+        self.seed_market()
+        response = self.client.post("/api/training-sessions", json={
+            "name": "回放训练", "symbol": symbol, "start_date": "2026-01-05",
+            "initial_cash": 25_000, "request_id": request_id,
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
     def replace_frozen_snapshot(self, account_id, snapshot):
         raw = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
         digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -148,6 +157,253 @@ class TradingLabAPITests(unittest.TestCase):
         self.assertEqual(history[0]["event"], "deleted")
         self.assertTrue(history[0]["deleted"])
         self.assertEqual(len(history), 3)
+
+    def test_training_create_restart_are_idempotent_and_clone_the_frozen_snapshot(self):
+        session = self.create_training_session()
+        self.assertEqual(session["status"], "active")
+        self.assertEqual(session["cursor_date"], session["start_date"])
+        self.assertEqual(session["symbol"], "603283.SH")
+        listed = self.client.get("/api/training-sessions")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertEqual(listed.json()[0]["id"], session["id"])
+        detail = self.client.get(f"/api/training-sessions/{session['id']}")
+        self.assertEqual(detail.json(), session)
+        account = self.client.get(f"/api/accounts/{session['account_id']}").json()
+        self.assertEqual(account["mode"], "training")
+        self.assertEqual(account["initial_cash"], 25_000.0)
+        frozen_market = self.client.get(
+            f"/api/market/603283.SH?end=2026-01-07&account_id={session['account_id']}"
+        ).json()
+        self.assertEqual([row["date"] for row in frozen_market["rows"]], ["2026-01-05"])
+
+        from trading_lab.app import _snapshot_for_account
+
+        original_snapshot = _snapshot_for_account(self.db_path, session["account_id"])
+        replay_create = self.client.post("/api/training-sessions", json={
+            "name": "回放训练", "symbol": "603283.SH", "start_date": "2026-01-05",
+            "initial_cash": 25_000, "request_id": "training-create",
+        })
+        self.assertEqual(replay_create.status_code, 200, replay_create.text)
+        self.assertEqual(replay_create.json(), session)
+        changed_create = self.client.post("/api/training-sessions", json={
+            "name": "回放训练", "symbol": "603283.SH", "start_date": "2026-01-05",
+            "initial_cash": 30_000, "request_id": "training-create",
+        })
+        self.assertEqual(changed_create.status_code, 409)
+
+        first_reset = self.client.post(
+            f"/api/training-sessions/{session['id']}/restart",
+            json={"request_id": "training-restart"},
+        )
+        self.assertEqual(first_reset.status_code, 200, first_reset.text)
+        restarted = first_reset.json()
+        self.assertEqual(restarted["parent_id"], session["id"])
+        self.assertEqual(restarted["start_date"], session["start_date"])
+        self.assertEqual(restarted["max_date"], session["max_date"])
+        self.assertNotEqual(restarted["account_id"], session["account_id"])
+        self.assertEqual(
+            _snapshot_for_account(self.db_path, restarted["account_id"]), original_snapshot,
+        )
+        restarted_account = self.client.get(f"/api/accounts/{restarted['account_id']}").json()
+        self.assertEqual(restarted_account["initial_cash"], account["initial_cash"])
+        self.assertEqual(restarted_account["settings"], account["settings"])
+        replay_reset = self.client.post(
+            f"/api/training-sessions/{session['id']}/restart",
+            json={"request_id": "training-restart"},
+        )
+        self.assertEqual(replay_reset.status_code, 200, replay_reset.text)
+        self.assertEqual(replay_reset.json(), restarted)
+        self.assertEqual(len(self.client.get("/api/accounts").json()), 2)
+
+    def test_training_scope_stale_cursor_finish_and_old_advance_replay(self):
+        first = self.create_training_session(request_id="training-scope-a")
+        second = self.create_training_session(request_id="training-scope-b")
+        plan = self.client.post(
+            f"/api/plans?account_id={first['account_id']}", json=self.plan_payload(),
+        )
+        self.assertEqual(plan.status_code, 200, plan.text)
+        plan_id = plan.json()["id"]
+        self.assertEqual(plan.json()["decision_date"], "2026-01-05")
+        self.assertEqual(self.client.get(f"/api/plans?account_id={first['account_id']}").json(), [plan.json()])
+        self.assertEqual(self.client.get(f"/api/plans?account_id={second['account_id']}").json(), [])
+        cross_update = self.client.put(
+            f"/api/plans/{plan_id}?account_id={second['account_id']}",
+            json=self.plan_payload(reason="跨账户修改"),
+        )
+        self.assertEqual(cross_update.status_code, 404)
+        cross_order = self.client.post(f"/api/accounts/{second['account_id']}/orders", json={
+            "symbol": "603283.SH", "side": "BUY", "quantity": 100,
+            "limit_price": 10.1, "stop_price": 9.0, "plan_id": plan_id,
+            "request_id": "cross-session-plan-order",
+        })
+        self.assertEqual(cross_order.status_code, 404)
+
+        review = self.client.put(
+            f"/api/reviews/2026-01-05?account_id={first['account_id']}",
+            json={"answers": ["训练记录"] * 7, "tags": ["回放"], "completed": False},
+        )
+        self.assertEqual(review.status_code, 200, review.text)
+        self.assertEqual(len(self.client.get(f"/api/reviews?account_id={first['account_id']}").json()), 1)
+        self.assertEqual(self.client.get(f"/api/reviews?account_id={second['account_id']}").json(), [])
+        future_review = self.client.put(
+            f"/api/reviews/2026-01-06?account_id={first['account_id']}",
+            json={"answers": ["未来"] * 7, "tags": [], "completed": False},
+        )
+        self.assertEqual(future_review.status_code, 422)
+
+        placed = self.client.post(f"/api/accounts/{first['account_id']}/orders", json={
+            "symbol": "603283.SH", "side": "BUY", "quantity": 100,
+            "limit_price": 10.1, "stop_price": 9.0, "plan_id": plan_id,
+            "request_id": "training-entry",
+        })
+        self.assertEqual(placed.status_code, 200, placed.text)
+        first_advance_body = {"request_id": "training-advance-1", "expected_cursor": "2026-01-05"}
+        advanced = self.client.post(
+            f"/api/accounts/{first['account_id']}/advance", json=first_advance_body,
+        )
+        self.assertEqual(advanced.status_code, 200, advanced.text)
+        self.assertEqual(advanced.json()["cursor_date"], "2026-01-06")
+        self.assertEqual(advanced.json()["fills"][0]["side"], "BUY")
+        current_plan = self.client.get(f"/api/plans?account_id={first['account_id']}").json()[0]
+        self.assertEqual(current_plan["status"], "active")
+        self.assertEqual(current_plan["decision_date"], "2026-01-06")
+        stale = self.client.post(f"/api/accounts/{first['account_id']}/advance", json={
+            "request_id": "training-stale", "expected_cursor": "2026-01-05",
+        })
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(stale.json()["detail"], "本次推进未提交，请刷新训练进度")
+
+        second_advance = self.client.post(f"/api/accounts/{first['account_id']}/advance", json={
+            "request_id": "training-advance-2", "expected_cursor": "2026-01-06",
+        })
+        self.assertEqual(second_advance.status_code, 200, second_advance.text)
+        self.assertEqual(second_advance.json()["cursor_date"], "2026-01-07")
+        finished = self.client.post(
+            f"/api/training-sessions/{first['id']}/finish",
+            json={"request_id": "training-finish"},
+        )
+        self.assertEqual(finished.status_code, 200, finished.text)
+        self.assertEqual(finished.json()["status"], "finished")
+        before_history = self.client.get(
+            f"/api/plans/{plan_id}/history?account_id={first['account_id']}"
+        ).json()
+        replay = self.client.post(
+            f"/api/accounts/{first['account_id']}/advance", json=first_advance_body,
+        )
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(replay.json()["cursor_date"], "2026-01-07")
+        self.assertEqual(self.client.get(
+            f"/api/plans/{plan_id}/history?account_id={first['account_id']}"
+        ).json(), before_history)
+        self.assertEqual(self.client.get(f"/api/accounts/{first['account_id']}/stats").status_code, 200)
+
+        new_advance = self.client.post(f"/api/accounts/{first['account_id']}/advance", json={
+            "request_id": "training-advance-after-finish", "expected_cursor": "2026-01-07",
+        })
+        self.assertEqual(new_advance.status_code, 409)
+        blocked_plan = self.client.post(
+            f"/api/plans?account_id={first['account_id']}", json=self.plan_payload(),
+        )
+        self.assertEqual(blocked_plan.status_code, 409)
+
+    def test_training_advance_rolls_back_fill_and_plan_history_together(self):
+        session = self.create_training_session(request_id="training-atomic-advance")
+        created = self.client.post(
+            f"/api/plans?account_id={session['account_id']}", json=self.plan_payload(),
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        plan_id = created.json()["id"]
+        placed = self.client.post(f"/api/accounts/{session['account_id']}/orders", json={
+            "symbol": "603283.SH", "side": "BUY", "quantity": 100,
+            "limit_price": 10.1, "stop_price": 9.0, "plan_id": plan_id,
+            "request_id": "training-atomic-order",
+        })
+        self.assertEqual(placed.status_code, 200, placed.text)
+        original_history = self.client.get(
+            f"/api/plans/{plan_id}/history?account_id={session['account_id']}"
+        ).json()
+
+        journal = self.app.state.journal
+        original_update = journal.record_training_fill_plan_updates
+
+        def update_then_fail(conn, session_id, account_id, fills):
+            original_update(conn, session_id, account_id, fills)
+            raise RuntimeError("synthetic failure after plan update")
+
+        isolated_client = TestClient(
+            self.app, base_url=ORIGIN, raise_server_exceptions=False,
+        )
+        isolated_client.headers.update({"Origin": ORIGIN})
+        try:
+            with patch.object(journal, "record_training_fill_plan_updates", side_effect=update_then_fail):
+                rejected = isolated_client.post(
+                    f"/api/accounts/{session['account_id']}/advance",
+                    json={"request_id": "training-atomic-advance-request", "expected_cursor": "2026-01-05"},
+                )
+            self.assertEqual(rejected.status_code, 500, rejected.text)
+        finally:
+            isolated_client.close()
+
+        after_rollback = self.client.get(f"/api/accounts/{session['account_id']}").json()
+        self.assertEqual(after_rollback["cursor_date"], "2026-01-05")
+        self.assertEqual(after_rollback["fills"], [])
+        self.assertEqual(after_rollback["orders"][0]["status"], "pending")
+        self.assertEqual(self.client.get(f"/api/training-sessions/{session['id']}").json()["cursor_date"],
+                         "2026-01-05")
+        after_plan = self.client.get(f"/api/plans?account_id={session['account_id']}").json()[0]
+        self.assertEqual(after_plan["status"], "planned")
+        self.assertEqual(after_plan["revision"], 1)
+        self.assertEqual(self.client.get(
+            f"/api/plans/{plan_id}/history?account_id={session['account_id']}"
+        ).json(), original_history)
+
+        retried = self.client.post(
+            f"/api/accounts/{session['account_id']}/advance",
+            json={"request_id": "training-atomic-advance-request", "expected_cursor": "2026-01-05"},
+        )
+        self.assertEqual(retried.status_code, 200, retried.text)
+        self.assertEqual(retried.json()["cursor_date"], "2026-01-06")
+        self.assertEqual(retried.json()["fills"][0]["side"], "BUY")
+        final_plan = self.client.get(f"/api/plans?account_id={session['account_id']}").json()[0]
+        self.assertEqual(final_plan["status"], "active")
+        self.assertEqual(final_plan["revision"], 2)
+        final_history = self.client.get(
+            f"/api/plans/{plan_id}/history?account_id={session['account_id']}"
+        ).json()
+        self.assertEqual([row["revision"] for row in final_history], [2, 1])
+
+    def test_training_finish_rejects_pending_orders_and_repeat_is_idempotent(self):
+        session = self.create_training_session(request_id="training-pending")
+        plan = self.client.post(
+            f"/api/plans?account_id={session['account_id']}", json=self.plan_payload(),
+        ).json()
+        placed = self.client.post(f"/api/accounts/{session['account_id']}/orders", json={
+            "symbol": "603283.SH", "side": "BUY", "quantity": 100,
+            "limit_price": 10.1, "stop_price": 9.0, "plan_id": plan["id"],
+            "request_id": "training-pending-order",
+        })
+        self.assertEqual(placed.status_code, 200, placed.text)
+        refused = self.client.post(
+            f"/api/training-sessions/{session['id']}/finish",
+            json={"request_id": "training-finish-pending"},
+        )
+        self.assertEqual(refused.status_code, 409)
+        self.assertEqual(refused.json()["code"], "training_pending_orders")
+        cancelled = self.client.post(
+            f"/api/accounts/{session['account_id']}/orders/{placed.json()['orders'][0]['id']}/cancel",
+        )
+        self.assertEqual(cancelled.status_code, 200, cancelled.text)
+        finished = self.client.post(
+            f"/api/training-sessions/{session['id']}/finish",
+            json={"request_id": "training-finish-pending"},
+        )
+        self.assertEqual(finished.status_code, 200, finished.text)
+        replay = self.client.post(
+            f"/api/training-sessions/{session['id']}/finish",
+            json={"request_id": "training-finish-pending"},
+        )
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(replay.json(), finished.json())
 
     def test_plan_history_and_order_idempotency_keep_original_snapshot(self):
         account = self.create_account()
@@ -466,7 +722,12 @@ class TradingLabAPITests(unittest.TestCase):
             ).fetchall(), [("backup-account-request", created.json()["id"])])
 
         legacy_backup = json.loads(json.dumps(backup))
-        del legacy_backup["tables"]["lab_account_creates"]
+        for table in (
+            "lab_account_creates", "lab_training_sessions", "lab_training_requests",
+            "lab_training_reviews", "lab_training_review_history", "lab_training_plans",
+            "lab_training_plan_history",
+        ):
+            del legacy_backup["tables"][table]
         legacy_restore = self.client.post("/api/restore", json={"backup": legacy_backup})
         self.assertEqual(legacy_restore.status_code, 200, legacy_restore.text)
 
@@ -477,6 +738,49 @@ class TradingLabAPITests(unittest.TestCase):
         self.assertEqual(rejected.status_code, 422)
         self.assertIn("账本核对", rejected.json()["detail"])
         self.assertEqual(len(self.client.get("/api/accounts").json()), 1)
+
+    def test_training_backup_round_trip_preserves_session_snapshot_and_scoped_journal(self):
+        session = self.create_training_session(request_id="training-backup-create")
+        plan = self.client.post(
+            f"/api/plans?account_id={session['account_id']}", json=self.plan_payload(),
+        )
+        self.assertEqual(plan.status_code, 200, plan.text)
+        review = self.client.put(
+            f"/api/reviews/2026-01-05?account_id={session['account_id']}",
+            json={"answers": ["备份训练"] * 7, "tags": ["回放"], "completed": False},
+        )
+        self.assertEqual(review.status_code, 200, review.text)
+        backup_response = self.client.get("/api/backup")
+        self.assertEqual(backup_response.status_code, 200, backup_response.text)
+        backup = backup_response.json()
+        for table in (
+            "lab_training_sessions", "lab_training_requests", "lab_training_reviews",
+            "lab_training_review_history", "lab_training_plans", "lab_training_plan_history",
+        ):
+            self.assertIn(table, backup["tables"])
+        restored = self.client.post("/api/restore", json={"backup": backup})
+        self.assertEqual(restored.status_code, 200, restored.text)
+        filename = re.search(r"另存为 ([^。]+)\。", restored.json()["message"]).group(1)
+        restored_path = self.root / filename
+        with sqlite3.connect(restored_path) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT account_id,name,symbol,start_date,max_date,cursor_date,status FROM lab_training_sessions"
+            ).fetchall(), [(
+                session["account_id"], "回放训练", "603283.SH", "2026-01-05", "2026-01-07",
+                "2026-01-05", "active",
+            )])
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM lab_training_requests WHERE method='create'"
+            ).fetchone()[0], 1)
+            plan_row = conn.execute(
+                "SELECT session_id,content_json FROM lab_training_plans WHERE id=?",
+                (plan.json()["id"],),
+            ).fetchone()
+            self.assertEqual(plan_row[0], session["id"])
+            self.assertEqual(json.loads(plan_row[1])["decision_date"], "2026-01-05")
+            self.assertEqual(conn.execute(
+                "SELECT session_id,date,answers_json FROM lab_training_reviews"
+            ).fetchone()[:2], (session["id"], "2026-01-05"))
 
     def test_csv_export_includes_plan_link_and_json_errors_are_chinese(self):
         account = self.create_account()

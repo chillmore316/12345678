@@ -9,9 +9,10 @@ import { api, ApiError } from './api';
 import type { EChartsOption } from 'echarts';
 import { EChart } from './EChart';
 import { KlinePanel } from './KlinePanel';
+import { ReplayPanel } from './ReplayPanel';
 import type {
   AccountCreatePayload, AccountDetail, AccountStats, AccountSummary, Bootstrap, Fill, LooseRecord, MarketPayload,
-  MarketRow, Observation, Order, OrderPayload, PageKey, PlanHistory, PlanPayload, Review, ThemeMode, TradingPlan,
+  MarketRow, Observation, Order, OrderPayload, PageKey, PlanHistory, PlanPayload, Review, ThemeMode, TradingPlan, TrainingSession,
 } from './types';
 import {
   REVIEW_QUESTIONS, REVIEW_TAGS, PAGE_TITLES, accountId as getAccountId, curveRows,
@@ -41,6 +42,14 @@ function todayISO(): string {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return `${values.year}-${values.month}-${values.day}`;
+}
+
+function reviewDraftStorageKey(accountId: number | string | null | undefined, date: string): string {
+  return accountId === undefined || accountId === null ? `tl-review-draft:${date}` : `tl-review-draft:account:${encodeURIComponent(String(accountId))}:${date}`;
+}
+
+function reviewDateStorageKey(accountId: number | string | null | undefined): string {
+  return accountId === undefined || accountId === null ? 'tl-review-date' : `tl-review-date:account:${encodeURIComponent(String(accountId))}`;
 }
 
 function requestId(): string {
@@ -197,9 +206,19 @@ function App() {
   const [statsLoading, setStatsLoading] = useState(false);
   const [reviews, setReviews] = useState<Review[]>([]);
   const [plans, setPlans] = useState<TradingPlan[]>([]);
+  const [trainingSessions, setTrainingSessions] = useState<TrainingSession[]>([]);
+  const [trainingSessionsLoaded, setTrainingSessionsLoaded] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const replayPauseRef = useRef<() => void>(() => undefined);
+  const activeTrainingSession = trainingSessions.find((item) => String(item.account_id) === activeAccountId) ?? null;
+  const scopedAccountId = activeTrainingSession?.account_id;
+
+  function navigateToPage(target: PageKey) {
+    if (target !== 'simulation') replayPauseRef.current();
+    setPage(target);
+  }
 
   function acceptCreatedAccount(value: AccountDetail) {
     const id = String(value.id);
@@ -224,8 +243,6 @@ function App() {
         plans: Array.isArray(value.plans) ? value.plans : [],
       };
       setBootstrap(loaded);
-      setReviews(loaded.reviews);
-      setPlans(loaded.plans);
       setAccounts(loaded.accounts);
       setBootError('');
       const defaultSymbol = loaded.symbols.find((item) => item.symbol === '603283.SH')?.symbol ?? loaded.observations.find((item) => item.symbol === '603283.SH')?.symbol ?? loaded.observations[0]?.symbol ?? loaded.symbols[0]?.symbol ?? '';
@@ -242,10 +259,19 @@ function App() {
     if (!bootstrap) return;
     let live = true;
     api.accounts().then((items) => { if (live) setAccounts(Array.isArray(items) ? items : []); }).catch(() => undefined);
-    api.reviews('').then((items) => { if (live) setReviews(Array.isArray(items) ? items : []); }).catch(() => undefined);
-    api.plans().then((items) => { if (live) setPlans(Array.isArray(items) ? items : []); }).catch(() => undefined);
+    api.trainingSessions().then((items) => { if (live) { setTrainingSessions(Array.isArray(items) ? items : []); setTrainingSessionsLoaded(true); } }).catch(() => { if (live) { setTrainingSessions([]); setTrainingSessionsLoaded(true); } });
     return () => { live = false; };
   }, [bootstrap]);
+
+  useEffect(() => {
+    if (!bootstrap || !trainingSessionsLoaded) return;
+    let live = true;
+    setReviews([]);
+    setPlans([]);
+    api.reviews('', scopedAccountId).then((items) => { if (live) setReviews(Array.isArray(items) ? items : []); }).catch(() => undefined);
+    api.plans(scopedAccountId).then((items) => { if (live) setPlans(Array.isArray(items) ? items : []); }).catch(() => undefined);
+    return () => { live = false; };
+  }, [bootstrap, scopedAccountId, trainingSessionsLoaded]);
 
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem('tl-theme', theme); }, [theme]);
   useEffect(() => { if (selectedSymbol) localStorage.setItem('tl-symbol', selectedSymbol); }, [selectedSymbol]);
@@ -254,7 +280,7 @@ function App() {
   useEffect(() => {
     const navigate = (event: Event) => {
       const target = (event as CustomEvent<PageKey>).detail;
-      if (target in PAGE_TITLES) setPage(target);
+      if (target in PAGE_TITLES) navigateToPage(target);
     };
     window.addEventListener('trading-lab:navigate', navigate);
     return () => window.removeEventListener('trading-lab:navigate', navigate);
@@ -268,6 +294,7 @@ function App() {
     api.account(activeAccountId).then((value) => {
       if (!live) return;
       setAccount(value);
+      setAccounts((items) => [value, ...items.filter((item) => String(item.id) !== activeAccountId)]);
       if (createdAccountIdRef.current === activeAccountId) createdAccountIdRef.current = null;
       setAccountLoading(false);
     }).catch((error: unknown) => {
@@ -284,13 +311,18 @@ function App() {
   const accountErrorDisplay = accountError && createdAccountIdRef.current === activeAccountId
     ? `账户已创建，详情暂不可读：${accountError}`
     : accountError;
-  function refreshAccountDetail() {
-    if (!activeAccountId) return;
-    api.account(activeAccountId).then((value) => {
-      setAccount(value);
-      setAccountError('');
-      if (createdAccountIdRef.current === activeAccountId) createdAccountIdRef.current = null;
-    }).catch((error: unknown) => setAccountError(error instanceof Error ? error.message : '读取失败'));
+  function refreshAccountDetail(id: string | number = activeAccountId) {
+    if (!id) return Promise.resolve();
+    return api.account(id).then((value) => {
+      if (String(id) === activeAccountId) {
+        setAccount(value);
+        setAccountError('');
+        if (createdAccountIdRef.current === activeAccountId) createdAccountIdRef.current = null;
+      }
+      setAccounts((items) => [value, ...items.filter((item) => String(item.id) !== String(id))]);
+    }).catch((error: unknown) => {
+      if (String(id) === activeAccountId) setAccountError(error instanceof Error ? error.message : '读取失败');
+    });
   }
   const accountCursor = visibleAccount?.cursor_date ? String(visibleAccount.cursor_date).slice(0, 10) : '';
   const isSimulationPage = page === 'simulation';
@@ -372,7 +404,7 @@ function App() {
             <div className="nav-group-label">{group}</div>
             {NAV.filter((item) => item.group === group).map((item) => {
               const Icon = item.icon;
-              return <button key={item.key} className={`nav-item ${page === item.key ? 'active' : ''}`} onClick={() => { setPage(item.key); setMobileNavOpen(false); }} data-testid={`nav-${item.key}`}>
+              return <button key={item.key} className={`nav-item ${page === item.key ? 'active' : ''}`} onClick={() => { navigateToPage(item.key); setMobileNavOpen(false); }} data-testid={`nav-${item.key}`}>
                 <Icon size={17} strokeWidth={1.8} /><span>{item.label}</span>{item.key === 'simulation' && account && <span className="nav-badge">{account.cursor_date ? '历史' : '待建'}</span>}
               </button>;
             })}
@@ -381,7 +413,7 @@ function App() {
         <div className="sidebar-bottom">
           <div className="phase-card"><div className="phase-card-top"><span className="phase-dot" /> <span>当前阶段</span><b>01</b></div><strong>复盘 · 计划 · 历史模拟</strong><div className="phase-track"><i /></div><small>研究模式运行中</small></div>
           <a className="old-app-link" href="http://127.0.0.1:8060" target="_blank" rel="noreferrer"><div className="old-app-icon"><TrendingUp size={15} /></div><span><b>旧版研究面板</b><small>打开独立页面</small></span><ArrowRight size={15} /></a>
-          <div className="sidebar-user"><div className="user-avatar">实</div><div className="user-label"><b>本地账户</b><small>数据存储在本机</small></div><button className="more-button" onClick={() => setPage('settings')} aria-label="打开设置">···</button></div>
+          <div className="sidebar-user"><div className="user-avatar">实</div><div className="user-label"><b>本地账户</b><small>数据存储在本机</small></div><button className="more-button" onClick={() => navigateToPage('settings')} aria-label="打开设置">···</button></div>
         </div>
       </aside>
 
@@ -389,7 +421,7 @@ function App() {
         <header className="topbar">
           <div className="topbar-left"><button className="mobile-menu" onClick={() => setMobileNavOpen(true)} aria-label="打开导航"><Menu size={20} /></button><div className="breadcrumb"><span>研究工作台</span><span className="slash">/</span><b>{activeTitle.title}</b></div></div>
           <div className="topbar-tools">
-            <label className="header-select symbol-select"><span>标的</span><select aria-label="选择标的" value={selectedSymbol} onChange={(event) => setSelectedSymbol(event.target.value)} disabled={!bootstrap?.symbols.length} data-testid="global-symbol-select">
+            <label className="header-select symbol-select"><span>标的</span><select aria-label="选择标的" value={selectedSymbol} onChange={(event) => { replayPauseRef.current(); setSelectedSymbol(event.target.value); }} disabled={!bootstrap?.symbols.length || (isSimulationPage && Boolean(activeTrainingSession))} data-testid="global-symbol-select">
               {(bootstrap?.symbols ?? []).map((item) => <option key={item.symbol} value={item.symbol}>{item.name} · {item.symbol}</option>)}
               {!bootstrap?.symbols.length && <option value="">暂无标的</option>}
             </select><ChevronDown className="select-chevron" size={13} /></label>
@@ -409,10 +441,10 @@ function App() {
 
         <div className="page-container">
           <div className="page-heading"><div><div className="eyebrow">{activeTitle.eyebrow}</div><h1>{activeTitle.title}</h1><p>{activeTitle.description}</p></div>{page === 'simulation' && visibleAccount && <div className="heading-status"><span className="status-light" /> HISTORICAL ONLY</div>}</div>
-          {page === 'overview' && <OverviewPage bootstrap={bootstrap} plans={plans} accounts={accounts} market={currentMarket} marketRows={marketRows} latest={latest} selectedSymbol={selectedSymbol} symbolName={currentSymbol?.name ?? selectedSymbol} theme={theme} selectedDate={selectedDate} onNavigate={setPage} observations={bootstrap?.observations ?? []} fills={[]} />}
-          {page === 'review' && <ReviewPage today={today} reviews={reviews} setReviews={setReviews} page={page} onNotice={(message, tone = 'success') => pushNotice(setToast, { message, tone })} />}
-          {page === 'plans' && <PlansPage plans={plans} setPlans={setPlans} symbols={bootstrap?.symbols ?? []} selectedSymbol={selectedSymbol} strategyName={bootstrap?.strategy?.name ?? ''} onNotice={(message, tone = 'success') => pushNotice(setToast, { message, tone })} />}
-          {page === 'simulation' && <SimulationPage accounts={accounts} setAccounts={setAccounts} activeAccountId={activeAccountId} setActiveAccountId={setActiveAccountId} account={visibleAccount} setAccount={setAccount} onAccountCreated={acceptCreatedAccount} loading={accountLoading || Boolean(activeAccountId && !accountMatchesSelection)} accountError={accountMatchesSelection ? accountErrorDisplay : ''} onRefresh={refreshAccountDetail} symbols={bootstrap?.symbols ?? []} selectedSymbol={selectedSymbol} symbolName={currentSymbol?.name ?? selectedSymbol} market={currentMarket} marketRows={marketRows} theme={theme} plans={plans} marketReady={accountMarketReady} onNotice={(message, tone = 'success') => pushNotice(setToast, { message, tone })} />}
+          {page === 'overview' && <OverviewPage bootstrap={bootstrap} plans={plans} accounts={accounts} market={currentMarket} marketRows={marketRows} latest={latest} selectedSymbol={selectedSymbol} symbolName={currentSymbol?.name ?? selectedSymbol} theme={theme} selectedDate={selectedDate} onNavigate={navigateToPage} observations={bootstrap?.observations ?? []} fills={[]} />}
+          {page === 'review' && <ReviewPage key={scopedAccountId === undefined ? 'global-review' : `review-${scopedAccountId}`} accountId={scopedAccountId} minDate={activeTrainingSession?.start_date} maxDate={activeTrainingSession ? (accountCursor || activeTrainingSession.start_date) : today} today={today} reviews={reviews} setReviews={setReviews} page={page} onNotice={(message, tone = 'success') => pushNotice(setToast, { message, tone })} />}
+          {page === 'plans' && <PlansPage key={scopedAccountId === undefined ? 'global-plans' : `plans-${scopedAccountId}`} accountId={scopedAccountId} plans={plans} setPlans={setPlans} symbols={bootstrap?.symbols ?? []} selectedSymbol={selectedSymbol} strategyName={bootstrap?.strategy?.name ?? ''} onNotice={(message, tone = 'success') => pushNotice(setToast, { message, tone })} />}
+          {page === 'simulation' && <SimulationPage accounts={accounts} setAccounts={setAccounts} trainingSessions={trainingSessions} setTrainingSessions={setTrainingSessions} activeAccountId={activeAccountId} setActiveAccountId={setActiveAccountId} account={visibleAccount} setAccount={setAccount} onAccountCreated={acceptCreatedAccount} loading={accountLoading || Boolean(activeAccountId && !accountMatchesSelection)} accountError={accountMatchesSelection ? accountErrorDisplay : ''} onRefresh={refreshAccountDetail} symbols={bootstrap?.symbols ?? []} selectedSymbol={selectedSymbol} setSelectedSymbol={setSelectedSymbol} symbolName={currentSymbol?.name ?? selectedSymbol} market={currentMarket} marketRows={marketRows} theme={theme} plans={plans} marketReady={accountMarketReady} onPauseReady={(pause) => { replayPauseRef.current = pause; }} onNotice={(message, tone = 'success') => pushNotice(setToast, { message, tone })} />}
           {page === 'statistics' && <StatisticsPage stats={currentStats} loading={statsLoading || statsAccountId !== activeAccountId} account={visibleAccount} accounts={accounts} activeAccountId={activeAccountId} theme={theme} />}
           {page === 'data' && <DataPage symbols={bootstrap?.symbols ?? []} selectedSymbol={selectedSymbol} selectedDate={selectedDate} market={currentMarket} marketRows={marketRows} loading={currentMarketLoading} activeAccountId={activeAccountId} onNotice={(message, tone = 'success') => pushNotice(setToast, { message, tone })} onRefresh={refreshMarket} onSetMarket={setMarket} />}
           {page === 'settings' && <SettingsPage theme={theme} setTheme={setTheme} strategy={bootstrap?.strategy} mode={currentMarket?.mode || '历史研究'} />}
@@ -496,8 +528,12 @@ function OverviewPage({ bootstrap, plans, accounts, market, marketRows, latest, 
   </div>;
 }
 
-function ReviewPage({ today, reviews, setReviews, page, onNotice }: { today: string; reviews: Review[]; setReviews: (fn: (items: Review[]) => Review[]) => void; page: PageKey; onNotice: (message: string, tone?: 'success' | 'error' | 'neutral') => void }) {
-  const [reviewDate, setReviewDate] = useState(() => localStorage.getItem('tl-review-date') || todayISO());
+function ReviewPage({ accountId, minDate, maxDate, today, reviews, setReviews, page, onNotice }: { accountId?: number | string; minDate?: string; maxDate?: string; today: string; reviews: Review[]; setReviews: (fn: (items: Review[]) => Review[]) => void; page: PageKey; onNotice: (message: string, tone?: 'success' | 'error' | 'neutral') => void }) {
+  const [reviewDate, setReviewDate] = useState(() => {
+    const saved = localStorage.getItem(reviewDateStorageKey(accountId));
+    if (saved && (!minDate || saved >= minDate) && (!maxDate || saved <= maxDate)) return saved;
+    return accountId !== undefined && accountId !== null ? maxDate || todayISO() : saved || todayISO();
+  });
   const [answers, setAnswers] = useState<string[]>(Array(7).fill(''));
   const [tags, setTags] = useState<string[]>([]);
   const [dirty, setDirty] = useState(false);
@@ -524,7 +560,7 @@ function ReviewPage({ today, reviews, setReviews, page, onNotice }: { today: str
     if (pending?.signature === signature) return pending.promise;
     const queued = saveQueueRef.current.catch(() => undefined).then(() => {
       if (deletedDatesRef.current.has(date)) throw new Error('这条复盘正在删除，已阻止排队中的草稿写回。');
-      return api.saveReview(date, payload, true);
+      return api.saveReview(date, payload, true, accountId);
     });
     inFlightSavesRef.current.set(date, { signature, promise: queued });
     saveQueueRef.current = queued.then(() => undefined, () => undefined);
@@ -543,17 +579,17 @@ function ReviewPage({ today, reviews, setReviews, page, onNotice }: { today: str
     const sameDraft = JSON.stringify([current.answers, current.tags, Boolean(current.completed)]) === JSON.stringify([payload.answers, payload.tags, payload.completed]);
     const revision = finite(saved.revision) ? saved.revision : current.baseRevision;
     if (sameDraft) {
-      localStorage.removeItem(`tl-review-draft:${date}`);
+      localStorage.removeItem(reviewDraftStorageKey(accountId, date));
       localDraftRef.current = { ...current, dirty: false, baseRevision: revision, updatedAt: Date.now() };
       setDirty(false); setHasUnsyncedDraft(false); setCompleted(payload.completed); setSaveState('saved');
     } else {
       const next = { ...current, baseRevision: revision };
       localDraftRef.current = next;
-      try { localStorage.setItem(`tl-review-draft:${date}`, JSON.stringify(next)); } catch { /* Keep the in-memory copy. */ }
+      try { localStorage.setItem(reviewDraftStorageKey(accountId, date), JSON.stringify(next)); } catch { /* Keep the in-memory copy. */ }
     }
   }
 
-  useEffect(() => { localStorage.setItem('tl-review-date', reviewDate); }, [reviewDate]);
+  useEffect(() => { localStorage.setItem(reviewDateStorageKey(accountId), reviewDate); }, [accountId, reviewDate]);
   useEffect(() => {
     setDraftReady(false);
     const saved = reviewsRef.current.find((item) => item.date === reviewDate);
@@ -563,7 +599,7 @@ function ReviewPage({ today, reviews, setReviews, page, onNotice }: { today: str
     const serverRevision = finite(saved?.revision) ? saved.revision : 0;
     let local: LocalReviewDraft | null = null;
     try {
-      const raw = localStorage.getItem(`tl-review-draft:${reviewDate}`);
+      const raw = localStorage.getItem(reviewDraftStorageKey(accountId, reviewDate));
       if (raw) {
         const parsed = JSON.parse(raw) as LocalReviewDraft;
         if (parsed.date === reviewDate && Array.isArray(parsed.answers) && Array.isArray(parsed.tags)) local = parsed;
@@ -580,7 +616,7 @@ function ReviewPage({ today, reviews, setReviews, page, onNotice }: { today: str
     setDirty(localIsNewer); setHasUnsyncedDraft(localIsNewer); setSaveState(localIsNewer ? 'editing' : 'saved');
     localDraftRef.current = { date: reviewDate, answers: nextAnswers, tags: nextTags, updatedAt: localIsNewer && local ? local.updatedAt : serverUpdatedAt, dirty: localIsNewer, completed: nextCompleted, baseRevision: serverRevision };
     setDraftReady(true);
-  }, [reviewDate]);
+  }, [reviewDate, accountId]);
 
   useEffect(() => {
     if (page !== 'review' || !dirty || !draftReady || deleting) return;
@@ -602,7 +638,7 @@ function ReviewPage({ today, reviews, setReviews, page, onNotice }: { today: str
     enqueueReviewSave(draft.date, payload).then(() => {
       const latest = localDraftRef.current;
       if (latest.date === draft.date && JSON.stringify([latest.answers, latest.tags, Boolean(latest.completed)]) === JSON.stringify([draft.answers, draft.tags, payload.completed])) {
-        localStorage.removeItem(`tl-review-draft:${draft.date}`);
+        localStorage.removeItem(reviewDraftStorageKey(accountId, draft.date));
         localDraftRef.current = { ...latest, dirty: false };
       }
     }).catch(() => undefined);
@@ -612,15 +648,15 @@ function ReviewPage({ today, reviews, setReviews, page, onNotice }: { today: str
     if (!archiveQuery) return;
     let live = true;
     setSearchLoading(true);
-    api.reviews(archiveQuery).then((items) => { if (live) { setReviews((existing) => mergeReviews(existing, items)); setArchiveError(''); setSearchLoading(false); } }).catch((error: unknown) => { if (live) { setArchiveError(error instanceof Error ? error.message : '搜索复盘失败'); setSearchLoading(false); } });
+    api.reviews(archiveQuery, accountId).then((items) => { if (live) { setReviews((existing) => mergeReviews(existing, items)); setArchiveError(''); setSearchLoading(false); } }).catch((error: unknown) => { if (live) { setArchiveError(error instanceof Error ? error.message : '搜索复盘失败'); setSearchLoading(false); } });
     return () => { live = false; };
-  }, [archiveQuery, setReviews]);
+  }, [archiveQuery, setReviews, accountId]);
 
   function persistLocalDraft(nextAnswers: string[], nextTags: string[], nextCompleted = false) {
     const currentReview = reviewsRef.current.find((item) => item.date === reviewDate);
     const draft: LocalReviewDraft = { date: reviewDate, answers: nextAnswers, tags: nextTags, updatedAt: Date.now(), dirty: true, completed: nextCompleted, baseRevision: finite(currentReview?.revision) ? currentReview.revision : localDraftRef.current.baseRevision ?? 0 };
     localDraftRef.current = draft;
-    try { localStorage.setItem(`tl-review-draft:${reviewDate}`, JSON.stringify(draft)); } catch { /* Keep editing even if browser storage is unavailable. */ }
+    try { localStorage.setItem(reviewDraftStorageKey(accountId, reviewDate), JSON.stringify(draft)); } catch { /* Keep editing even if browser storage is unavailable. */ }
     setHasUnsyncedDraft(true); setDirty(true); setSaveState('editing');
   }
 
@@ -665,10 +701,10 @@ function ReviewPage({ today, reviews, setReviews, page, onNotice }: { today: str
     localDraftRef.current = { ...localDraftRef.current, dirty: false };
     try {
       await saveQueueRef.current;
-      await api.deleteReview(date);
+      await api.deleteReview(date, accountId);
       setReviews((items) => items.filter((item) => item.date !== date));
       setAnswers(Array(7).fill('')); setTags([]); setCompleted(false); setDirty(false); setHasUnsyncedDraft(false); setSaveState('saved');
-      localStorage.removeItem(`tl-review-draft:${date}`);
+      localStorage.removeItem(reviewDraftStorageKey(accountId, date));
       localDraftRef.current = { date, answers: Array(7).fill(''), tags: [], updatedAt: Date.now(), dirty: false, completed: false };
       onNotice('复盘记录已删除。');
     } catch (error) {
@@ -677,7 +713,7 @@ function ReviewPage({ today, reviews, setReviews, page, onNotice }: { today: str
       if (draft.date === date) {
         const recovered = { ...draft, dirty: true, updatedAt: Date.now() };
         localDraftRef.current = recovered;
-        try { localStorage.setItem(`tl-review-draft:${date}`, JSON.stringify(recovered)); } catch { /* Keep the in-memory draft. */ }
+        try { localStorage.setItem(reviewDraftStorageKey(accountId, date), JSON.stringify(recovered)); } catch { /* Keep the in-memory draft. */ }
         setDirty(true); setHasUnsyncedDraft(true); setSaveState('error');
       }
       onNotice(error instanceof Error ? error.message : '删除失败。', 'error');
@@ -691,8 +727,8 @@ function ReviewPage({ today, reviews, setReviews, page, onNotice }: { today: str
     <div className="review-main">
       <section className="panel review-intro"><div className="review-intro-mark"><BookOpenCheck size={21} /></div><div><div className="eyebrow">DAILY JOURNAL</div><h2>把事实写下来，<em>再评价结果。</em></h2><p>按日期保存。编辑内容会自动保存为草稿；点击完成后才会标记为正式复盘。</p></div><div className={`review-save-indicator ${saveState}`}><span className="save-indicator-dot" />{stateCopy}</div></section>
       <section className="panel review-form-panel">
-        {hasUnsyncedDraft && <div className="inline-warning draft-recovery"><AlertTriangle size={15} /><span>发现未同步草稿，已在本机恢复。修改后会继续自动保存到数据库。</span><button onClick={() => { localStorage.removeItem(`tl-review-draft:${reviewDate}`); setHasUnsyncedDraft(false); }}>知道了</button></div>}
-        <div className="review-date-row"><label className="field-label" htmlFor="review-date">复盘日期</label><input id="review-date" className="input-date" type="date" max={today} value={reviewDate} disabled={deleting} onChange={(event) => { setReviewDate(event.target.value); setDirty(false); }} data-testid="review-date" /><span className="review-date-note">每个日期有一份独立记录</span>{currentReview?.revision !== undefined && <span className="revision-pill">版本 {currentReview.revision}</span>}</div>
+        {hasUnsyncedDraft && <div className="inline-warning draft-recovery"><AlertTriangle size={15} /><span>发现未同步草稿，已在本机恢复。修改后会继续自动保存到数据库。</span><button onClick={() => { localStorage.removeItem(reviewDraftStorageKey(accountId, reviewDate)); setHasUnsyncedDraft(false); }}>知道了</button></div>}
+        <div className="review-date-row"><label className="field-label" htmlFor="review-date">复盘日期</label><input id="review-date" className="input-date" type="date" min={minDate} max={maxDate || today} value={reviewDate} disabled={deleting} onChange={(event) => { setReviewDate(event.target.value); setDirty(false); }} data-testid="review-date" /><span className="review-date-note">每个日期有一份独立记录{accountId !== undefined ? ' · 不晚于训练进度' : ''}</span>{currentReview?.revision !== undefined && <span className="revision-pill">版本 {currentReview.revision}</span>}</div>
         <div className="question-list">{REVIEW_QUESTIONS.map((question, index) => <label className="question-card" key={question}><span className="question-number">{String(index + 1).padStart(2, '0')}</span><span className="question-content"><b>{question}</b><textarea value={answers[index] ?? ''} disabled={deleting} onChange={(event) => mutateAnswer(index, event.target.value)} placeholder={index === 0 ? '写下你观察到的事实与依据…' : '用几句话记录你的判断…'} rows={index === 0 || index === 3 ? 3 : 2} data-testid={`review-answer-${index + 1}`} /></span><span className="question-check">{answers[index]?.trim() ? <CheckCircle2 size={17} /> : <span />}</span></label>)}</div>
         <div className="review-tags-section"><div><b>今日标签</b><small>选择能描述今天执行状态的词</small></div><div className="review-tag-list">{REVIEW_TAGS.map((tag) => <button key={tag} type="button" className={`tag-chip ${tags.includes(tag) ? 'active' : ''}`} onClick={() => toggleTag(tag)} disabled={deleting}>{tags.includes(tag) && <Check size={12} />}{tag}</button>)}</div></div>
         <div className="review-form-footer"><button className="button button-danger-quiet" onClick={deleteCurrent} disabled={!currentReview || deleting} data-testid="delete-review"><Trash2 size={15} /> 删除记录</button><div><span className="autosave-note"><Clock3 size={14} />{saveState === 'saving' ? '自动保存中…' : saveState === 'error' ? '自动保存失败，请手动保存' : '编辑后 2 秒自动保存'}</span><button className="button button-outline" onClick={saveNow} disabled={deleting} data-testid="save-review">保存草稿</button><button className="button button-primary" onClick={completeReview} disabled={deleting} data-testid="complete-review"><CheckCircle2 size={15} /> 完成今日复盘</button></div></div>
@@ -712,7 +748,7 @@ function mergeReviews(existing: Review[], incoming: Review[]): Review[] {
   return [...map.values()].sort((a, b) => b.date.localeCompare(a.date));
 }
 
-function PlansPage({ plans, setPlans, symbols, selectedSymbol, strategyName, onNotice }: { plans: TradingPlan[]; setPlans: (fn: (items: TradingPlan[]) => TradingPlan[]) => void; symbols: Bootstrap['symbols']; selectedSymbol: string; strategyName: string; onNotice: (message: string, tone?: 'success' | 'error' | 'neutral') => void }) {
+function PlansPage({ accountId, plans, setPlans, symbols, selectedSymbol, strategyName, onNotice }: { accountId?: number | string; plans: TradingPlan[]; setPlans: (fn: (items: TradingPlan[]) => TradingPlan[]) => void; symbols: Bootstrap['symbols']; selectedSymbol: string; strategyName: string; onNotice: (message: string, tone?: 'success' | 'error' | 'neutral') => void }) {
   const [form, setForm] = useState({ symbol: selectedSymbol, strategy: strategyName, market_trend: '', reason: '', entry_condition: '', entry_price: '', stop_price: '', target_price: '', quantity: '', discipline: '', status: 'planned' });
   const [editingId, setEditingId] = useState<string | number | null>(null);
   const [saving, setSaving] = useState(false);
@@ -742,11 +778,11 @@ function PlansPage({ plans, setPlans, symbols, selectedSymbol, strategyName, onN
     setSaving(true);
     try {
       if (editingId !== null) {
-        const saved = await api.updatePlan(editingId, planPayload);
+        const saved = await api.updatePlan(editingId, planPayload, accountId);
         setPlans((items) => [saved, ...items.filter((item) => String(item.id) !== String(editingId))]);
         onNotice('交易计划已更新。');
       } else {
-        const saved = await api.createPlan(planPayload);
+        const saved = await api.createPlan(planPayload, accountId);
         setPlans((items) => [saved, ...items.filter((item) => String(item.id) !== String(saved.id))]);
         onNotice('交易计划已保存。');
       }
@@ -763,14 +799,14 @@ function PlansPage({ plans, setPlans, symbols, selectedSymbol, strategyName, onN
 
   async function removePlan(plan: TradingPlan) {
     if (!plan.id || !window.confirm(`确定删除 ${plan.symbol} 计划吗？`)) return;
-    try { await api.deletePlan(plan.id); setPlans((items) => items.filter((item) => String(item.id) !== String(plan.id))); onNotice('交易计划已删除。'); }
+    try { await api.deletePlan(plan.id, accountId); setPlans((items) => items.filter((item) => String(item.id) !== String(plan.id))); onNotice('交易计划已删除。'); }
     catch (error) { onNotice(error instanceof Error ? error.message : '删除计划失败。', 'error'); }
   }
 
   async function showHistory(plan: TradingPlan) {
     if (!plan.id) return;
     setHistoryPlan(plan); setHistoryLoading(true); setHistoryRows([]);
-    try { const rows = await api.planHistory(plan.id); setHistoryRows(Array.isArray(rows) ? rows : []); }
+    try { const rows = await api.planHistory(plan.id, accountId); setHistoryRows(Array.isArray(rows) ? rows : []); }
     catch (error) { onNotice(error instanceof Error ? error.message : '读取计划历史失败。', 'error'); }
     finally { setHistoryLoading(false); }
   }
@@ -794,8 +830,8 @@ function PlansPage({ plans, setPlans, symbols, selectedSymbol, strategyName, onN
   </div>;
 }
 
-function SimulationPage({ accounts, setAccounts, activeAccountId, setActiveAccountId, account, setAccount, onAccountCreated, loading, accountError, onRefresh, symbols, selectedSymbol, symbolName, market, marketRows, theme, plans, marketReady, onNotice }: {
-  accounts: AccountSummary[]; setAccounts: Dispatch<SetStateAction<AccountSummary[]>>; activeAccountId: string; setActiveAccountId: (id: string) => void; account: AccountDetail | null; setAccount: (account: AccountDetail | null) => void; onAccountCreated: (account: AccountDetail) => void; loading: boolean; accountError: string; onRefresh: () => void; symbols: Bootstrap['symbols']; selectedSymbol: string; symbolName: string; market: MarketPayload | null; marketRows: MarketRow[]; theme: ThemeMode; plans: TradingPlan[]; marketReady: boolean; onNotice: (message: string, tone?: 'success' | 'error' | 'neutral') => void;
+function SimulationPage({ accounts, setAccounts, trainingSessions, setTrainingSessions, activeAccountId, setActiveAccountId, account, setAccount, onAccountCreated, loading, accountError, onRefresh, symbols, selectedSymbol, setSelectedSymbol, symbolName, market, marketRows, theme, plans, marketReady, onPauseReady, onNotice }: {
+  accounts: AccountSummary[]; setAccounts: Dispatch<SetStateAction<AccountSummary[]>>; trainingSessions: TrainingSession[]; setTrainingSessions: Dispatch<SetStateAction<TrainingSession[]>>; activeAccountId: string; setActiveAccountId: (id: string) => void; account: AccountDetail | null; setAccount: (account: AccountDetail | null) => void; onAccountCreated: (account: AccountDetail) => void; loading: boolean; accountError: string; onRefresh: (accountId?: string | number) => Promise<void> | void; symbols: Bootstrap['symbols']; selectedSymbol: string; setSelectedSymbol: (symbol: string) => void; symbolName: string; market: MarketPayload | null; marketRows: MarketRow[]; theme: ThemeMode; plans: TradingPlan[]; marketReady: boolean; onPauseReady: (pause: () => void) => void; onNotice: (message: string, tone?: 'success' | 'error' | 'neutral') => void;
 }) {
   const [tab, setTab] = useState<OrderTab>('positions');
   const [creatingAccount, setCreatingAccount] = useState(false);
@@ -820,7 +856,18 @@ function SimulationPage({ accounts, setAccounts, activeAccountId, setActiveAccou
   const [pendingMutationMessage, setPendingMutationMessage] = useState('');
   const [pendingAccountCreate, setPendingAccountCreate] = useState<PendingAccountCreate | null>(() => readPendingAccountCreate());
   const [pendingAccountCreateMessage, setPendingAccountCreateMessage] = useState('');
+  const [trainingMutationPending, setTrainingMutationPending] = useState(false);
+  const [replayAdvancePending, setReplayAdvancePending] = useState(false);
   const accountCreateInFlightRef = useRef(false);
+  const replayPauseRef = useRef<() => void>(() => undefined);
+  const trainingSession = trainingSessions.find((item) => String(item.account_id) === activeAccountId) ?? null;
+  const trainingReadOnly = trainingSession?.status === 'finished';
+  const activeAccountIsListed = accounts.some((item) => String(item.id) === activeAccountId);
+  const activeAccountLoadingLabel = account
+    ? `${account.name} · 已选`
+    : trainingSession
+      ? `${trainingSession.name} · ${loading ? '训练账本正在读取' : '训练账本详情暂不可用'}`
+      : `账本 ${activeAccountId} · ${loading ? '正在读取' : '当前未出现在列表'}`;
 
   const selectedPlans = plans.filter((plan) => plan.symbol === selectedSymbol && !['completed', 'done', 'canceled', 'cancelled'].includes(String(plan.status).toLowerCase()));
   const selectedPosition = account?.positions?.find((position) => position.symbol === selectedSymbol);
@@ -927,6 +974,9 @@ function SimulationPage({ accounts, setAccounts, activeAccountId, setActiveAccou
 
   async function submitOrder(event: FormEvent) {
     event.preventDefault();
+    replayPauseRef.current();
+    if (trainingReadOnly) { onNotice('已结束的训练账户为只读状态。', 'error'); return; }
+    if (trainingMutationPending || replayAdvancePending) { onNotice('训练账户正在确认推进或结束操作，暂不能下单。', 'error'); return; }
     if (!account || !marketReady || price === null || price <= 0 || qty === null || qty <= 0 || riskPercent === null || riskPercent <= 0 || riskPercent > 100) { onNotice('请填写有效价格、数量和 0 到 100 之间的风险比例。', 'error'); return; }
     if (side === 'BUY' && stop === null) { onNotice('买入委托需要填写止损价，以便服务器校验账户风险。', 'error'); return; }
     if (stopPrice && stop === null) { onNotice('止损价需要填写有效数字。', 'error'); return; }
@@ -991,6 +1041,8 @@ function SimulationPage({ accounts, setAccounts, activeAccountId, setActiveAccou
   }
 
   async function advanceNextDay() {
+    replayPauseRef.current();
+    if (trainingSession) { onNotice('训练账户请使用历史回放控制推进。', 'error'); return; }
     if (!account || !marketReady) { onNotice('账户行情尚未对齐或没有可用历史数据，暂不能推进。', 'error'); return; }
     if (pendingMutation) { onNotice('仍有一笔操作结果待确认，请先重试同一请求。', 'error'); return; }
     const cursor = account.cursor_date ?? '尚未开始';
@@ -1004,6 +1056,9 @@ function SimulationPage({ accounts, setAccounts, activeAccountId, setActiveAccou
   }
 
   async function cancelOrder(order: Order) {
+    replayPauseRef.current();
+    if (trainingReadOnly) { onNotice('已结束的训练账户为只读状态。', 'error'); return; }
+    if (trainingMutationPending || replayAdvancePending) { onNotice('训练账户正在确认推进或结束操作，暂不能撤单。', 'error'); return; }
     if (!account || pendingMutation) { onNotice('先确认待处理操作，再撤销委托。', 'error'); return; }
     const id = orderId(order);
     if (id === undefined) return;
@@ -1035,13 +1090,14 @@ function SimulationPage({ accounts, setAccounts, activeAccountId, setActiveAccou
     : null;
   const accountCreateModal = creatingAccount && <AccountCreateModal accountName={accountName} setAccountName={setAccountName} initialCash={initialCash} setInitialCash={setInitialCash} startDate={startDate} setStartDate={setStartDate} advancedFees={advancedFees} setAdvancedFees={setAdvancedFees} fees={fees} setFees={setFees} saving={creating} error={actionError} pending={Boolean(pendingAccountCreate)} pendingBanner={accountCreateRetryBanner} onSubmit={createNewAccount} onClose={() => setCreatingAccount(false)} />;
 
-  if (!accounts.length && !loading) return <div className="account-empty-layout">{pendingMutationBanner}{pendingAccountCreateBanner}<section className="panel account-onboarding"><div className="account-onboarding-symbol"><Wallet size={22} /></div><div className="eyebrow">HISTORICAL SIMULATION / SETUP</div><h2>建立一份隔离的历史账本</h2><p>账户会绑定创建时可用的行情、日历、执行和费率快照。后续数据更新不会改写已创建账户的历史视图。</p><div className="onboarding-rules"><span><CheckCircle2 size={16} />仅推进已核验交易日</span><span><CheckCircle2 size={16} />委托在历史开盘规则下撮合</span><span><CheckCircle2 size={16} />与其他账户账本隔离</span></div><button className="button button-primary" onClick={() => setCreatingAccount(true)} disabled={Boolean(pendingAccountCreate)} data-testid="create-account-open"><Plus size={16} /> 创建历史模拟账户</button></section>{accountCreateModal}</div>;
+  if (!accounts.length && !loading) return <div className="account-empty-layout">{pendingMutationBanner}{pendingAccountCreateBanner}<section className="panel account-onboarding"><div className="account-onboarding-symbol"><Wallet size={22} /></div><div className="eyebrow">HISTORICAL SIMULATION / SETUP</div><h2>建立一份隔离的历史账本</h2><p>账户会绑定创建时可用的行情、日历、执行和费率快照。后续数据更新不会改写已创建账户的历史视图。</p><div className="onboarding-rules"><span><CheckCircle2 size={16} />仅推进已核验交易日</span><span><CheckCircle2 size={16} />委托在历史开盘规则下撮合</span><span><CheckCircle2 size={16} />与其他账户账本隔离</span></div><button className="button button-primary" onClick={() => setCreatingAccount(true)} disabled={Boolean(pendingAccountCreate)} data-testid="create-account-open"><Plus size={16} /> 创建历史模拟账户</button></section><ReplayPanel sessions={trainingSessions} setSessions={setTrainingSessions} activeAccountId={activeAccountId} setActiveAccountId={setActiveAccountId} account={account} selectedSymbol={selectedSymbol} setSelectedSymbol={setSelectedSymbol} symbols={symbols} market={market} accountMutationPending={Boolean(pendingMutation) || pendingMutationBusy || canceling !== null || placingOrder} onAccountUpdated={updateAccountData} onRefreshAccount={onRefresh} onPauseReady={(pause) => { replayPauseRef.current = pause; onPauseReady(pause); }} onAdvancePending={setReplayAdvancePending} onSessionMutationPending={setTrainingMutationPending} onNotice={onNotice} />{accountCreateModal}</div>;
 
   return <div className="simulation-page">
-    <section className="panel simulation-toolbar"><div className="account-picker"><div className="account-picker-icon"><Wallet size={17} /></div><label><span>模拟账户</span><select value={activeAccountId} onChange={(event) => setActiveAccountId(event.target.value)} data-testid="account-select">{accounts.map((item) => <option key={item.id} value={String(item.id)}>{item.name} · {item.cursor_date ? formatDate(item.cursor_date) : '待推进'}</option>)}</select></label><ChevronDown size={14} /></div><div className="toolbar-divider" /><div className="sim-date-lock"><span className="status-light" /><span>历史进度</span><b>{account?.cursor_date ? formatDate(account.cursor_date) : '未开始'}</b></div><div className="toolbar-spacer" /><button className="button button-outline button-small" onClick={() => setCreatingAccount(true)} disabled={Boolean(pendingAccountCreate)}><Plus size={14} /> 新建账户</button><button className="button button-primary button-small advance-button" onClick={advanceNextDay} disabled={!account || advancing || loading || !marketReady || Boolean(pendingMutation) || pendingMutationBusy} data-testid="advance-day">{advancing ? <LoaderCircle size={15} className="spin" /> : <ArrowRight size={15} />}推进下一交易日</button></section>
+    <section className="panel simulation-toolbar"><div className="account-picker"><div className="account-picker-icon"><Wallet size={17} /></div><label><span>模拟账户</span><select value={activeAccountId} onChange={(event) => { const nextId = event.target.value; const nextTraining = trainingSessions.find((item) => String(item.account_id) === nextId); replayPauseRef.current(); setTrainingMutationPending(false); if (nextTraining) setSelectedSymbol(nextTraining.symbol); setActiveAccountId(nextId); }} data-testid="account-select">{activeAccountId && !activeAccountIsListed && <option value={activeAccountId}>{account?.id && String(account.id) === activeAccountId ? `${account.name} · 已选` : activeAccountLoadingLabel}</option>}{accounts.map((item) => <option key={item.id} value={String(item.id)}>{item.name} · {item.cursor_date ? formatDate(item.cursor_date) : '待推进'}</option>)}</select></label><ChevronDown size={14} /></div><div className="toolbar-divider" /><div className="sim-date-lock"><span className="status-light" /><span>历史进度</span><b>{account?.cursor_date ? formatDate(account.cursor_date) : '未开始'}</b></div><div className="toolbar-spacer" /><button className="button button-outline button-small" onClick={() => setCreatingAccount(true)} disabled={Boolean(pendingAccountCreate)}><Plus size={14} /> 新建账户</button>{!trainingSession && <button className="button button-primary button-small" onClick={advanceNextDay} disabled={!account || advancing || loading || !marketReady || Boolean(pendingMutation) || pendingMutationBusy} data-testid="advance-day">{advancing ? <LoaderCircle size={15} className="spin" /> : <ArrowRight size={15} />}推进下一交易日</button>}</section>
+    <ReplayPanel sessions={trainingSessions} setSessions={setTrainingSessions} activeAccountId={activeAccountId} setActiveAccountId={setActiveAccountId} account={account} selectedSymbol={selectedSymbol} setSelectedSymbol={setSelectedSymbol} symbols={symbols} market={market} accountMutationPending={Boolean(pendingMutation) || pendingMutationBusy || canceling !== null || placingOrder} onAccountUpdated={updateAccountData} onRefreshAccount={onRefresh} onPauseReady={(pause) => { replayPauseRef.current = pause; onPauseReady(pause); }} onAdvancePending={setReplayAdvancePending} onSessionMutationPending={setTrainingMutationPending} onNotice={onNotice} />
     {loading && <div className="loading-panel"><LoaderCircle className="spin" />读取模拟账本…</div>}
-    {accountError && !loading && !account && <EmptyState icon={AlertTriangle} title="无法读取该模拟账户" detail={accountError} action={<button className="button button-outline" onClick={onRefresh}>重试读取</button>} />}
-    {accountError && !loading && account && <div className="inline-warning"><AlertTriangle size={15} /><span>{accountError}</span><button className="button button-outline button-small" onClick={onRefresh}>重试读取</button></div>}
+    {accountError && !loading && !account && <EmptyState icon={AlertTriangle} title="无法读取该模拟账户" detail={accountError} action={<button className="button button-outline" onClick={() => onRefresh()}>重试读取</button>} />}
+    {accountError && !loading && account && <div className="inline-warning"><AlertTriangle size={15} /><span>{accountError}</span><button className="button button-outline button-small" onClick={() => onRefresh()}>重试读取</button></div>}
     {pendingMutationBanner}
     {pendingAccountCreateBanner}
     {account && <>
@@ -1060,16 +1116,16 @@ function SimulationPage({ accounts, setAccounts, activeAccountId, setActiveAccou
           <KlinePanel rows={marketRows} symbol={selectedSymbol} symbolName={symbolName} source={market?.source} adjustment={market?.adjustment} updatedAt={market?.updated_at} warning={market?.warning} theme={theme} fills={account.fills ?? []} unit={unit} endDate={account.cursor_date ?? undefined} levels={levels} cutoffLabel={`账户历史行情截至 ${formatDate(account.cursor_date ?? '')} · 已按账户 ${market?.dataset_id ? `数据集 ${market.dataset_id}` : '冻结数据快照'} 截断`} emptyLabel="该账户日期范围内没有已验证行情" />
           <section className="panel ledger-panel"><div className="panel-head ledger-head"><div><div className="eyebrow">ACCOUNT LEDGER</div><h2>账户记录</h2></div><div className="ledger-tabs">{([['positions', '持仓'], ['orders', '委托'], ['fills', '成交'], ['cycles', '交易周期']] as Array<[OrderTab, string]>).map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}>{label}<small>{key === 'positions' ? account.positions?.length ?? 0 : key === 'orders' ? account.orders?.length ?? 0 : key === 'fills' ? account.fills?.length ?? 0 : account.cycles?.length ?? 0}</small></button>)}</div></div>
             {tab === 'positions' && (account.positions?.length ? <div className="table-scroll"><table className="data-table"><thead><tr><th>标的</th><th>持仓</th><th>可卖</th><th>成本均价</th><th>市值</th><th>浮动盈亏</th></tr></thead><tbody>{account.positions.map((position, index) => <tr key={`${position.symbol}-${index}`}><td><div className="table-symbol"><b>{positionName(position, new Map(symbols.map((item) => [item.symbol, item.name])))}</b><small className="mono">{position.symbol}</small></div></td><td>{formatQuantity(position.quantity)} {symbolUnit(position.symbol, symbols)}</td><td>{formatQuantity(position.sellable)} {symbolUnit(position.symbol, symbols)}</td><td>¥{formatMoney(position.avg_cost, priceDigits(position.avg_cost))}</td><td>¥{formatMoney(position.market_value)}</td><td className={finite(position.unrealized_pnl) ? position.unrealized_pnl >= 0 ? 'positive' : 'negative' : ''}>{formatMoney(position.unrealized_pnl)}</td></tr>)}</tbody></table></div> : <EmptyState icon={Wallet} title="当前没有持仓" detail="买入委托仅在下一交易日开盘尝试撮合，未成交余单当日到期。" />)}
-            {tab === 'orders' && (account.orders?.length ? <div className="table-scroll"><table className="data-table"><thead><tr><th>提交日期</th><th>标的</th><th>方向</th><th>委托数量</th><th>限价</th><th>成交数量</th><th>状态</th><th /></tr></thead><tbody>{account.orders.map((order, index) => { const id = orderId(order); const status = String(order.status ?? ''); const canCancel = ['pending', 'partially_filled'].includes(status.toLowerCase()); return <tr key={id ?? index}><td>{formatDate(String(order.created_date ?? order.created_at ?? ''))}</td><td className="mono">{order.symbol}</td><td><span className={`side-pill ${(order.side ?? '').toLowerCase()}`}>{order.side === 'BUY' ? '买入' : order.side === 'SELL' ? '卖出' : order.side ?? '—'}</span></td><td>{formatQuantity(order.quantity)}</td><td>¥{formatMoney(order.limit_price, priceDigits(order.limit_price))}</td><td>{formatQuantity(order.filled_quantity)}</td><td><div className="status-stack"><span className={`status-pill ${statusTone(status)}`}>{normalizeStatus(status)}</span>{order.pending_reason !== undefined && order.pending_reason !== null && order.pending_reason !== '' && <small>{translatePendingReason(String(order.pending_reason))}</small>}</div></td><td>{canCancel && id !== undefined && <button className="row-action-button danger" title="撤销委托" disabled={canceling === String(id) || Boolean(pendingMutation)} onClick={() => cancelOrder(order)}>{canceling === String(id) ? <LoaderCircle size={14} className="spin" /> : <X size={14} />}</button>}</td></tr>; })}</tbody></table></div> : <EmptyState icon={ListChecks} title="没有委托记录" detail="新委托会进入队列，不会立即成交。" />)}
+            {tab === 'orders' && (account.orders?.length ? <div className="table-scroll"><table className="data-table"><thead><tr><th>提交日期</th><th>标的</th><th>方向</th><th>委托数量</th><th>限价</th><th>成交数量</th><th>状态</th><th /></tr></thead><tbody>{account.orders.map((order, index) => { const id = orderId(order); const status = String(order.status ?? ''); const canCancel = ['pending', 'partially_filled'].includes(status.toLowerCase()); return <tr key={id ?? index}><td>{formatDate(String(order.created_date ?? order.created_at ?? ''))}</td><td className="mono">{order.symbol}</td><td><span className={`side-pill ${(order.side ?? '').toLowerCase()}`}>{order.side === 'BUY' ? '买入' : order.side === 'SELL' ? '卖出' : order.side ?? '—'}</span></td><td>{formatQuantity(order.quantity)}</td><td>¥{formatMoney(order.limit_price, priceDigits(order.limit_price))}</td><td>{formatQuantity(order.filled_quantity)}</td><td><div className="status-stack"><span className={`status-pill ${statusTone(status)}`}>{normalizeStatus(status)}</span>{order.pending_reason !== undefined && order.pending_reason !== null && order.pending_reason !== '' && <small>{translatePendingReason(String(order.pending_reason))}</small>}</div></td><td>{canCancel && id !== undefined && <button className="row-action-button danger" title="撤销委托" disabled={trainingReadOnly || trainingMutationPending || replayAdvancePending || canceling === String(id) || Boolean(pendingMutation)} onClick={() => cancelOrder(order)}>{canceling === String(id) ? <LoaderCircle size={14} className="spin" /> : <X size={14} />}</button>}</td></tr>; })}</tbody></table></div> : <EmptyState icon={ListChecks} title="没有委托记录" detail="新委托会进入队列，不会立即成交。" />)}
             {tab === 'fills' && (account.fills?.length ? <div className="table-scroll"><table className="data-table"><thead><tr><th>成交时间</th><th>标的</th><th>方向</th><th>成交数量</th><th>成交价格</th><th>已实现盈亏</th><th>关联计划</th></tr></thead><tbody>{account.fills.map((fill, index) => <tr key={fill.id ?? index}><td>{formatDate(fillDate(fill))}</td><td className="mono">{fill.symbol}</td><td><span className={`side-pill ${(fillSide(fill) || '').toLowerCase()}`}>{fillSide(fill) === 'BUY' ? '买入' : fillSide(fill) === 'SELL' ? '卖出' : '—'}</span></td><td>{formatQuantity(fill.quantity)} {symbolUnit(fill.symbol ?? '', symbols)}</td><td>¥{formatMoney(fillPrice(fill), priceDigits(fillPrice(fill)))}</td><td className={finite(fill.realized_pnl ?? fill.pnl) ? Number(fill.realized_pnl ?? fill.pnl) >= 0 ? 'positive' : 'negative' : ''}>{formatMoney(fill.realized_pnl ?? fill.pnl)}</td><td>{fill.plan_id ?? '未关联'}</td></tr>)}</tbody></table></div> : <EmptyState icon={Activity} title="暂无历史成交" detail="委托只在下一历史交易日开盘尝试一次，未成交余单当日到期。" />)}
             {tab === 'cycles' && (account.cycles?.length ? <div className="table-scroll"><table className="data-table"><thead><tr><th>标的</th><th>建仓日</th><th>平仓日</th><th>状态</th><th>净收益</th><th>R 值</th><th>数量</th></tr></thead><tbody>{account.cycles.slice(0, 50).map((cycle, index) => { const rawStatus = objectLabel(cycle, 'status', 'state'); const status = ['open', 'active', 'holding'].includes(rawStatus.toLowerCase()) ? '持仓中' : ['closed', 'completed', 'done'].includes(rawStatus.toLowerCase()) ? '已平仓' : normalizeStatus(rawStatus); const pnl = numericValue(cycle, 'net_pnl', 'realized_pnl', 'pnl'); return <tr key={rowId(cycle, index)}><td className="mono">{objectLabel(cycle, 'symbol')}</td><td>{formatDate(objectLabel(cycle, 'entry_date', 'opened_at', 'open_date', 'start_date'))}</td><td>{formatDate(objectLabel(cycle, 'exit_date', 'closed_at', 'close_date', 'end_date'))}</td><td>{status}</td><td className={pnl === null ? '' : pnl >= 0 ? 'positive' : 'negative'}>{formatMoney(pnl)}</td><td>{formatMetricR(cycle)}</td><td>{formatQuantity(numericValue(cycle, 'quantity', 'shares'))} {symbolUnit(objectLabel(cycle, 'symbol'), symbols)}</td></tr>; })}</tbody></table></div> : <EmptyState icon={History} title="暂无完整交易周期" detail="周期统计会在仓位完整闭合后由账本形成。" />)}
           </section>
         </div>
         <aside className="simulation-side">
-          <section className="panel order-form-panel"><div className="panel-head"><div><div className="eyebrow">ORDER TICKET / HISTORICAL</div><h2>模拟委托</h2></div><span className="badge badge-warning">不连接实盘</span></div><div className="side-switch"><button className={side === 'BUY' ? 'buy active' : ''} onClick={() => setSide('BUY')} data-testid="order-side-buy"><ArrowUpRight size={15} />买入</button><button className={side === 'SELL' ? 'sell active' : ''} onClick={() => setSide('SELL')} data-testid="order-side-sell"><ArrowDownRight size={15} />卖出</button></div>
-            <form className="order-form" onSubmit={submitOrder}><label className="form-field"><span>交易标的</span><select value={selectedSymbol} onChange={() => undefined} disabled>{symbols.map((item) => <option key={item.symbol} value={item.symbol}>{item.name} · {item.symbol}</option>)}</select></label><div className="form-grid form-grid-two"><label className="form-field"><span>委托数量</span><div className="input-suffix"><input type="number" min={side === 'BUY' ? 100 : 1} step={side === 'BUY' ? 100 : 1} value={orderQuantity} onChange={(event) => setOrderQuantity(event.target.value)} placeholder="数量" required data-testid="order-quantity" /><b>{unit}</b></div></label><label className="form-field"><span>限价</span><div className="input-prefix"><b>¥</b><input type="number" min={tickSize} step={tickSize} value={orderPrice} onChange={(event) => setOrderPrice(event.target.value)} placeholder={`¥ ${tickSize === 0.001 ? '0.000' : '0.00'}`} required data-testid="order-limit-price" /></div></label></div><div className="form-grid form-grid-two"><label className="form-field"><span>止损价 {side === 'BUY' ? <i>* 买入必填</i> : <small>可选</small>}</span><div className="input-prefix"><b>¥</b><input type="number" min={tickSize} step={tickSize} value={stopPrice} onChange={(event) => setStopPrice(event.target.value)} placeholder="仅用于风险校验，不自动止损" required={side === 'BUY'} data-testid="order-stop-price" /></div></label><label className="form-field"><span>风险比例 <small>占现金与权益较小值</small></span><div className="input-suffix"><input type="number" min="0.01" max="100" step="0.01" value={riskPct} onChange={(event) => setRiskPct(event.target.value)} required data-testid="order-risk-pct" /><b>%</b></div></label></div><label className="form-field"><span>关联计划 <small>选填</small></span><select value={orderPlan} onChange={(event) => setOrderPlan(event.target.value)}><option value="">不关联</option>{selectedPlans.map((plan) => <option key={plan.id} value={String(plan.id)}>{plan.strategy || '计划'} · {formatDate(plan.created_at)}</option>)}</select></label>
+          <section className="panel order-form-panel"><div className="panel-head"><div><div className="eyebrow">ORDER TICKET / HISTORICAL</div><h2>模拟委托</h2></div><span className={`badge ${trainingReadOnly ? 'badge-soft' : 'badge-warning'}`}>{trainingReadOnly ? '训练已结束 · 只读' : trainingMutationPending ? '训练操作确认中' : '不连接实盘'}</span></div><div className="side-switch"><button className={side === 'BUY' ? 'buy active' : ''} onClick={() => setSide('BUY')} disabled={trainingReadOnly || trainingMutationPending || replayAdvancePending} data-testid="order-side-buy"><ArrowUpRight size={15} />买入</button><button className={side === 'SELL' ? 'sell active' : ''} onClick={() => setSide('SELL')} disabled={trainingReadOnly || trainingMutationPending || replayAdvancePending} data-testid="order-side-sell"><ArrowDownRight size={15} />卖出</button></div>
+            <form className="order-form" onSubmit={submitOrder}><label className="form-field"><span>交易标的</span><select value={selectedSymbol} onChange={() => undefined} disabled>{symbols.map((item) => <option key={item.symbol} value={item.symbol}>{item.name} · {item.symbol}</option>)}</select></label><div className="form-grid form-grid-two"><label className="form-field"><span>委托数量</span><div className="input-suffix"><input type="number" min={side === 'BUY' ? 100 : 1} step={side === 'BUY' ? 100 : 1} value={orderQuantity} onChange={(event) => setOrderQuantity(event.target.value)} placeholder="数量" required disabled={trainingReadOnly || trainingMutationPending || replayAdvancePending} data-testid="order-quantity" /><b>{unit}</b></div></label><label className="form-field"><span>限价</span><div className="input-prefix"><b>¥</b><input type="number" min={tickSize} step={tickSize} value={orderPrice} onChange={(event) => setOrderPrice(event.target.value)} placeholder={`¥ ${tickSize === 0.001 ? '0.000' : '0.00'}`} required disabled={trainingReadOnly || trainingMutationPending || replayAdvancePending} data-testid="order-limit-price" /></div></label></div><div className="form-grid form-grid-two"><label className="form-field"><span>止损价 {side === 'BUY' ? <i>* 买入必填</i> : <small>可选</small>}</span><div className="input-prefix"><b>¥</b><input type="number" min={tickSize} step={tickSize} value={stopPrice} onChange={(event) => setStopPrice(event.target.value)} placeholder="仅用于风险校验，不自动止损" required={side === 'BUY'} disabled={trainingReadOnly || trainingMutationPending || replayAdvancePending} data-testid="order-stop-price" /></div></label><label className="form-field"><span>风险比例 <small>占现金与权益较小值</small></span><div className="input-suffix"><input type="number" min="0.01" max="100" step="0.01" value={riskPct} onChange={(event) => setRiskPct(event.target.value)} required disabled={trainingReadOnly || trainingMutationPending || replayAdvancePending} data-testid="order-risk-pct" /><b>%</b></div></label></div><label className="form-field"><span>关联计划 <small>选填</small></span><select value={orderPlan} onChange={(event) => setOrderPlan(event.target.value)} disabled={trainingReadOnly || trainingMutationPending || replayAdvancePending}><option value="">不关联</option>{selectedPlans.map((plan) => <option key={plan.id} value={String(plan.id)}>{plan.strategy || '计划'} · {formatDate(plan.created_at)}</option>)}</select></label>
               <div className="order-risk-box"><div><span>委托金额估算</span><b>{orderValue !== null ? `¥${formatMoney(orderValue)}` : '—'}</b></div><div><span>含费用风险估算</span><b>{estimatedRisk !== null ? `¥${formatMoney(estimatedRisk)}` : '—'}</b></div><div><span>费用后预算参考</span><b>{riskBudget !== null ? `¥${formatMoney(riskBudget)}` : '—'}</b></div><small>{maxAffordableBuyQuantity !== null ? `风险与可用现金估算的最大买入数量：${formatQuantity(maxAffordableBuyQuantity)} ${unit}。` : '风险预算按可用现金与权益的较小值计算。'} 费用仅作估算；最终余额、费率和可买数量以服务端冻结规则校验为准。</small>{side === 'BUY' && maxAffordableBuyQuantity === 0 && <b className="risk-budget-warning">一手的止损风险或现金需求已超过当前预算</b>}</div>
-              <button className="button button-primary order-submit" type="submit" disabled={placingOrder || loading || !marketReady || Boolean(pendingMutation) || pendingMutationBusy} data-testid="submit-order">{placingOrder ? <LoaderCircle size={16} className="spin" /> : <ArrowRight size={16} />}{placingOrder ? '提交中…' : `提交${side === 'BUY' ? '买入' : '卖出'}委托`}</button>
+              <button className="button button-primary order-submit" type="submit" disabled={trainingReadOnly || trainingMutationPending || replayAdvancePending || placingOrder || loading || !marketReady || Boolean(pendingMutation) || pendingMutationBusy} data-testid="submit-order">{placingOrder ? <LoaderCircle size={16} className="spin" /> : <ArrowRight size={16} />}{trainingReadOnly ? '训练已结束' : trainingMutationPending ? '训练操作确认中' : placingOrder ? '提交中…' : `提交${side === 'BUY' ? '买入' : '卖出'}委托`}</button>
             </form><div className="order-note"><InfoIcon /><span>委托不会即时成交。只在下一历史交易日开盘尝试撮合；未成交余单当日到期，不模拟盘中触价。</span></div></section>
           <section className="panel cursor-card"><div className="cursor-card-icon"><CalendarDays size={17} /></div><div className="eyebrow">SIMULATION CURSOR</div><strong>{account.cursor_date ? formatDate(account.cursor_date) : '尚未开始'}</strong><p>{account.cursor_date ? '图表、成本和成交标记都被限制在该日。' : '创建时选定开始日，推进后才会读取账户历史行情。'}</p><div className="cursor-lock"><ShieldAlert size={14} />账户时间边界已锁定</div></section>
         </aside>
